@@ -1,0 +1,47 @@
+# Local environments and generated files
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+
+# All live configuration, account state, conversations and backups are private
+data/
+profiles/
+runtime-home/
+shared-history/
+file-backups/
+migration-backups/
+backups/
+core/
+core.previous/
+config.json
+profiles.json
+proxies.json
+initial-credentials.txt
+jetski-standalone-oauth-token
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.db
+*.db-*
+*.sqlite*
+*.log
+*.tar.gz
+*.zip
+*.deb
+*.AppImage
+virtualenv-*.pyz
+
+# OS/editor artifacts
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

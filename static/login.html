@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>登录 - Antigravity Suite</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #0b0f19;
+            color: #f1f5f9;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .login-box {
+            background: #151d30;
+            border: 1px solid #23314e;
+            border-radius: 14px;
+            width: 100%;
+            max-width: 400px;
+            padding: 32px;
+            box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+        }
+        .logo-area {
+            text-align: center;
+            margin-bottom: 24px;
+        }
+        .logo-badge {
+            width: 52px;
+            height: 52px;
+            border-radius: 12px;
+            background: linear-gradient(135deg, #0284c7, #38bdf8);
+            margin: 0 auto 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 26px;
+        }
+        h2 { font-size: 20px; font-weight: 600; margin-bottom: 6px; }
+        .sub { font-size: 13px; color: #94a3b8; }
+        .form-group { margin-bottom: 18px; }
+        label { display: block; font-size: 13px; color: #94a3b8; margin-bottom: 6px; }
+        input {
+            width: 100%;
+            padding: 10px 14px;
+            border-radius: 8px;
+            background: #0b0f19;
+            border: 1px solid #334155;
+            color: #fff;
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        input:focus { border-color: #38bdf8; }
+        .btn-submit {
+            width: 100%;
+            padding: 11px;
+            border-radius: 8px;
+            background: #0284c7;
+            color: #fff;
+            border: none;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            margin-top: 8px;
+            transition: background 0.2s;
+        }
+        .btn-submit:hover { background: #0369a1; }
+        .err-msg {
+            color: #f87171;
+            font-size: 13px;
+            margin-top: 12px;
+            text-align: center;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-box">
+        <div class="logo-area">
+            <div class="logo-badge">🚀</div>
+            <h2>Antigravity 独立控制台</h2>
+            <div class="sub">请输入管理员安全凭据以访问 Web IDE</div>
+        </div>
+        <form id="login-form">
+            <div class="form-group">
+                <label>账号 / 用户名</label>
+                <input id="username" type="text" placeholder="默认: admin" required autofocus>
+            </div>
+            <div class="form-group">
+                <label>登录密码</label>
+                <input id="password" type="password" placeholder="请输入密码" required>
+            </div>
+            <button class="btn-submit" type="submit">立即登录</button>
+            <div class="err-msg" id="err-box">账号或密码不正确</div>
+        </form>
+    </div>
+    <script>
+        document.getElementById("login-form").addEventListener("submit", async function(e) {
+            e.preventDefault();
+            const errBox = document.getElementById("err-box");
+            errBox.style.display = "none";
+            const u = document.getElementById("username").value.trim();
+            const p = document.getElementById("password").value;
+
+            try {
+                const res = await fetch("/__suite/api/login", {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({ username: u, password: p })
+                });
+                let data = {};
+                try {
+                    data = await res.json();
+                } catch(e) {
+                    data = { ok: false, error: "服务响应格式异常 (" + res.status + ")" };
+                }
+                if (data.ok) {
+                    window.location.reload();
+                } else {
+                    errBox.textContent = data.error || "登录失败";
+                    errBox.style.display = "block";
+                }
+            } catch (err) {
+                errBox.textContent = "网络连接异常: " + (err.message || "");
+                errBox.style.display = "block";
+            }
+        });
+    </script>
+</body>
+</html>

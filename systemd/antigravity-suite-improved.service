@@ -1,0 +1,17 @@
+[Unit]
+Description=Antigravity Suite Improved
+After=network.target
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/antigravity-suite-improved
+Environment=ANTIGRAVITY_SUITE_DATA=/var/lib/antigravity-suite-improved
+Environment=PYTHONUNBUFFERED=1
+UMask=0077
+ExecStart=/opt/antigravity-suite-improved/.venv/bin/python /opt/antigravity-suite-improved/server.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=70
+KillMode=mixed
+[Install]
+WantedBy=multi-user.target

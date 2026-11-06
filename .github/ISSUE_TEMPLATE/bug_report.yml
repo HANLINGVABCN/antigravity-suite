@@ -1,0 +1,38 @@
+name: Bug report / 问题报告
+description: Report a reproducible problem using redacted, non-sensitive data.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: "请勿上传密码、OAuth Token、私钥、真实档案包或未脱敏截图。Security issues should be reported privately."
+  - type: input
+    id: version
+    attributes:
+      label: Suite version / 项目版本
+      placeholder: v0.1.0
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment / 环境
+      description: OS, architecture, Python and Antigravity version; supervision and reverse proxy type.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps / 复现步骤
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: Expected and actual behavior / 预期与实际结果
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Redacted logs / 脱敏日志
+      render: text

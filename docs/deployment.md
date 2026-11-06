@@ -1,0 +1,95 @@
+# 部署、反代与升级
+
+## 普通 Ubuntu/Debian VPS（systemd）
+
+要求 Linux x86_64 或 ARM64、Python 3.9+、curl、Xvfb、xdpyinfo 和本体运行依赖。安装脚本针对使用 systemd 的主机：
+
+```bash
+git clone https://github.com/HANLINGVABCN/antigravity-suite.git
+cd antigravity-suite
+sudo bash install.sh
+```
+
+默认路径：
+
+| 项目 | 路径 |
+|---|---|
+| 源码 | `/opt/antigravity-suite-improved` |
+| 私有数据 | `/var/lib/antigravity-suite-improved` |
+| 首次密码 | 数据目录内的 `initial-credentials.txt`，权限 600 |
+| 服务 | `antigravity-suite-improved.service` |
+| 默认监听 | `127.0.0.1:18888` |
+
+首次启动生成随机密码，仅保存在私有文件。管理员密码修改会使旧会话失效，升级不重新生成密码。
+
+本体未安装时仍可登录管理大厅、配置代理及导入档案。在顶部“安装 / 卸载反重力”操作本体；安装从官方 HTTPS 地址下载并独立解包，默认版本固定为 2.29.0。配置 `core_deb_sha256` 或 `core_deb_sha512` 可验证供应方校验值。`dpkg-deb` 不会安装缺失的系统运行依赖；缺库时先补齐依赖。
+
+已有共享本体不会被套件卸载。要使用卸载功能，请先安装到套件自己的 `core_directory`；卸载仅移除这个本体目录，保留配置和聊天库。
+
+## 手动或 Supervisor / s6 容器
+
+安装依赖后建立独立环境：
+
+```bash
+cd /path/to/antigravity-suite
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+ANTIGRAVITY_SUITE_DATA=/path/to/private-data .venv/bin/python server.py
+```
+
+先验证前台启动，再参考 [Supervisor 示例](../examples/supervisor.conf) 加入你的监管配置。替换源码、数据和日志路径，运行 `supervisorctl reread`、`supervisorctl update`。没有 systemd 的容器不要执行 systemd 安装脚本。
+
+服务用户必须能够读写数据目录、启动 Xvfb 并执行本体。默认 systemd 安装器使用 root；容器或手动部署可以选择专用普通用户。
+
+## SSH 本地转发
+
+在本地电脑运行：
+
+```bash
+ssh -N -L 127.0.0.1:19088:127.0.0.1:18888 -p 22 user@your-vps.example
+```
+
+然后访问 `http://localhost:19088/?portal=1`。在 VPS 虚拟桌面里的浏览器直接访问 `http://localhost:18888/?portal=1`。两处 localhost 分别指各自的机器。
+
+## HTTPS 反向代理
+
+使用独立域名。保留原始 Host、WebSocket 升级和长连接；关闭响应缓冲，设置足够长的读取超时。参考：
+
+- [Nginx](../examples/nginx.conf)：需替换域名和证书路径。
+- [Caddy](../examples/Caddyfile)：需替换域名，并满足自动证书签发条件。
+
+本机 HTTPS 反代设置 `X-Forwarded-Proto` 时，可在私有 `config.json` 设置 `trusted_proxy: true`，用于 Secure Cookie 判断。该设置只信任 loopback 连接的转发协议头，不代表信任公网任意请求头。
+
+不要直接公开原生动态端口或可选 TCP forwarder。管理员门禁由套件的 18888 网关提供。
+
+## 升级与迁移
+
+安装脚本会停止自己的服务，备份数据，再复制新源码和安装依赖。建议另行保存源码版本及完整数据备份。备份中包含凭据和聊天记录。
+
+将早期单 HOME 数据迁移到独立 HOME / 共享历史库之前，使用 [迁移工具](../tools/migrate_shared_history.py)：
+
+```bash
+sudo systemctl stop antigravity-suite-improved
+ANTIGRAVITY_SUITE_DATA=/var/lib/antigravity-suite-improved \
+  /opt/antigravity-suite-improved/.venv/bin/python tools/migrate_shared_history.py
+sudo systemctl start antigravity-suite-improved
+```
+
+迁移工具要求相关引擎都已停止，先备份，合并正文与索引，再链接各配置 HOME。不会尝试读取其他用户或其他应用的数据目录。
+
+## 排错
+
+```bash
+systemctl status antigravity-suite-improved
+journalctl -u antigravity-suite-improved -f
+```
+
+引擎日志位于 `profiles/<id>/home/engine.log`。诊断卡片分为尚未检测、检测中、正常和异常，原因以“可能是……”呈现。
+
+- 登录回到门禁：检查 Cookie、HTTPS 及反代 Host。
+- 启动任务不进入：设计上需等待按钮变为“进入”，再点一次。
+- 代理检查失败：检查节点地址、协议、认证和网络。
+- Google 鉴权失败：检查 OAuth 配置、凭据、账号资格及原生日志；有 Token 不等于有服务权限。
+- 共享历史不可用：停止引擎后检查符号链接和索引版本，再从备份恢复。
+
+卸载脚本只取消管理服务，保留源码、账号、历史和备份。请勿直接递归删除数据目录。

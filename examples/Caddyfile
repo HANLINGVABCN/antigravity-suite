@@ -1,0 +1,6 @@
+# Replace with your own domain; Caddy must be able to obtain its HTTPS certificate.
+ide.example.com {
+    reverse_proxy 127.0.0.1:18888 {
+        flush_interval -1
+    }
+}
