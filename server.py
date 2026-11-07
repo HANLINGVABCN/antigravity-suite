@@ -36,6 +36,8 @@ class SuiteState:
         self.outbound_bridge=None; self.engine_proxy_url=None
         self.last_switch=0
         self.pending_imports={}
+        self.auth_lock=asyncio.Lock();self.pending_mfa={};self.security_attempts={}
+        self.protected_connections=set()
     def prune_imports(self):
         now=time.time()
         for token,item in list(self.pending_imports.items()):
@@ -187,12 +189,16 @@ async def guard(request,handler):
     if request.path.startswith('/__suite/api/') and request.method not in ('GET','HEAD','OPTIONS'):
         origin=request.headers.get('Origin')
         if origin and urlsplit(origin).netloc!=request.host: return web.json_response({'ok':False,'error':'请求来源不匹配'},status=403)
+    transport=request.transport
+    if authenticated and transport:s.protected_connections.add(transport)
     try: response=await handler(request)
     except (ValueError,KeyError,TypeError,json.JSONDecodeError) as e: return web.json_response({'ok':False,'error':str(e)},status=400)
     except web.HTTPException: raise
     except Exception:
         logging.exception('请求执行失败')
         return web.json_response({'ok':False,'error':'操作失败，请查看服务日志'},status=500)
+    finally:
+        if transport:s.protected_connections.discard(transport)
     if request.path.startswith('/__suite/'):
         response.headers['Cache-Control']='no-store'
         response.headers['X-Content-Type-Options']='nosniff'
@@ -215,10 +221,28 @@ async def api(request):
         s.login_attempts[ip]=attempts
         if len(attempts)>=10: return web.json_response({'ok':False,'error':'尝试次数过多，请稍后重试'},status=429)
         user=d.get('username','').strip(); password=d.get('password','')
-        valid=await asyncio.to_thread(check_password,password,s.cfg['auth_password_hash'])
+        checked_hash=s.cfg['auth_password_hash']
+        valid=await asyncio.to_thread(check_password,password,checked_hash)
         if user!=s.cfg['auth_user'] or not valid:
             attempts.append(now)
             return web.json_response({'ok':False,'error':'用户名或密码错误'},status=401)
+        async with s.auth_lock:
+            # Password settings can change while the hash is checked off-thread.
+            if user!=s.cfg['auth_user'] or checked_hash!=s.cfg['auth_password_hash']:
+                attempts.append(now)
+                return web.json_response(dict(ok=False,error='用户名或密码错误'),status=401)
+            if s.cfg.get('mfa_enabled'):
+                from two_factor import check_factor
+                code=d.get('code','')
+                if not code:
+                    attempts.append(now)
+                    return web.json_response(dict(ok=False,mfa_required=True,error='请输入验证器验证码，也可使用一条恢复码'),status=401)
+                factor=check_factor(s.cfg,code)
+                if factor is None:
+                    attempts.append(now)
+                    return web.json_response(dict(ok=False,mfa_required=True,error='验证码或恢复码不正确，可能已使用或设备时间不一致'),status=401)
+                from security_api import commit_security
+                commit_security(s,factor)
         s.login_attempts.pop(ip,None)
         response=ok()
         response.set_cookie('ag_session',session_token(s.cfg),httponly=True,samesite='Lax',secure=secure_cookie(request,s.cfg),max_age=30*86400,path='/')
@@ -422,19 +446,26 @@ async def api(request):
     if path=='system/config':
         if method=='GET': return ok(**{k:s.cfg.get(k) for k in ['listen_host','listen_port','auth_user']})
         if method=='POST':
-            async with s.lock:
+            async with s.lock,s.auth_lock:
                 port=d.get('listen_port',s.cfg['listen_port'])
                 if not 1<=int(port)<=65535: raise ValueError('端口必须在 1–65535 范围内')
                 changed_user=d.get('auth_user',s.cfg['auth_user']).strip()
                 if not changed_user: raise ValueError('用户名不能为空')
                 password=d.get('auth_pass')
                 if password and len(password)<12: raise ValueError('新密码至少需要 12 个字符')
+                from security_api import commit_security
+                updates={}
                 if password or changed_user!=s.cfg['auth_user']:
-                    if not await asyncio.to_thread(check_password,d.get('current_password',''),s.cfg['auth_password_hash']): raise ValueError('当前密码不正确')
-                    s.cfg['session_secret']=secrets.token_hex(32)
-                if password: s.cfg['auth_password_hash']=await asyncio.to_thread(hash_password,password)
-                changed=int(port)!=s.cfg['listen_port']; s.cfg.update(listen_port=int(port),auth_user=changed_user); s.persist()
+                    from security_api import verify_current
+                    updates.update(await verify_current(s,request,d))
+                    updates['session_secret']=secrets.token_hex(32)
+                if password:updates['auth_password_hash']=await asyncio.to_thread(hash_password,password)
+                changed=int(port)!=s.cfg['listen_port'];updates.update(listen_port=int(port),auth_user=changed_user)
+                commit_security(s,updates,keep_transport=request.transport)
             return ok(restart_required=changed)
+    if path.startswith('system/security/'):
+        from security_api import security_api
+        return await security_api(request,s,path,d)
     if path.startswith('auth/google/'):
         from oauth import google_api
         return await google_api(request,s,path,d)
@@ -460,6 +491,7 @@ async def page(request):
     if request.path=='/__suite/floating.js': return web.FileResponse(s.static/'floating.js')
     if request.path=='/__suite/privacy.js': return web.FileResponse(s.static/'privacy.js')
     if request.path=='/__suite/proxy-editor.js': return web.FileResponse(s.static/'proxy-editor.js')
+    if request.path=='/__suite/security.js': return web.FileResponse(s.static/'security.js')
     if request.path=='/__suite/portal' or (request.path=='/' and 'portal' in request.query):
         return web.FileResponse(s.static/'portal.html',headers={'Cache-Control':'no-store'})
     if request.path.startswith('/__suite/'): raise web.HTTPNotFound()
@@ -492,6 +524,7 @@ async def resources(app):
     if s.outbound_bridge: await s.outbound_bridge.close()
     for item in s.pending_imports.values():Path(item['path']).unlink(missing_ok=True)
     s.pending_imports.clear()
+    s.pending_mfa.clear()
 
 async def shutting_down(app):
     s=app['state']

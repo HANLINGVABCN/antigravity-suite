@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0 — 2026-11-07
+
+- Added optional authenticator-app two-factor login, configured entirely in the web service settings.
+- Password-verified setup uses a locally generated QR/secret and a real TOTP confirmation before enabling.
+- Added ten hashed, single-use recovery codes and verified disable/regeneration flows.
+- Reject replayed TOTP codes and concurrent reuse of recovery codes; commit consumption before granting a session.
+- Enabling, disabling, changing credentials or regenerating recovery codes revoke prior sessions and existing IDE connections.
+- Existing deployments keep their password and authenticator setting; new installs leave it off until explicitly enabled.
+
 ## 0.3.0 — 2026-11-07
 
 - Added an export option to include the profile's associated proxy, including its credentials, as a separate proxy.json file.

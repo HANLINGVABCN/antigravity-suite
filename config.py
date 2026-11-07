@@ -48,6 +48,7 @@ def load_config():
     existing='/opt/Antigravity/antigravity' if Path('/opt/Antigravity/antigravity').is_file() else '/opt/antigravity/antigravity'
     cfg = dict(listen_host='127.0.0.1', listen_port=18888, auth_user='admin',
                auth_password_hash='', session_secret=secrets.token_hex(32),
+               mfa_enabled=False,mfa_secret='',mfa_recovery_hashes=[],mfa_last_counter=-1,
                default_profile_id=None, active_profile_id=None,
                antigravity_bin=existing, display_num=':99',
                runtime_home=str(DATA_DIR / 'runtime-home'), profiles_dir=str(PROFILES_DIR),
@@ -59,6 +60,7 @@ def load_config():
         if 'profiles_dir' not in saved and (SUITE_DIR / 'profiles').is_dir():
             cfg['profiles_dir'] = str(SUITE_DIR / 'profiles')
     old_password = cfg.pop('auth_pass', '')
+    if cfg.get('mfa_enabled') and not cfg.get('mfa_secret'):raise ValueError('验证器配置损坏：缺少密钥，请恢复私有备份')
     if not cfg['auth_password_hash']:
         password = old_password or generate_secure_password()
         cfg['auth_password_hash'] = hash_password(password)

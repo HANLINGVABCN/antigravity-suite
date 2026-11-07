@@ -6,7 +6,7 @@ from pathlib import Path
 root = Path(__file__).resolve().parents[1]
 private_dirs = {'data', 'profiles', 'runtime-home', 'shared-history', 'file-backups', 'backups', '.venv'}
 private_names = {'config.json', 'profiles.json', 'proxies.json', 'initial-credentials.txt',
-                 'jetski-standalone-oauth-token', '.env'}
+                 'jetski-standalone-oauth-token', 'antigravity-recovery-codes.txt', '.env'}
 patterns = [
     re.compile(b'GO' + b'CSPX-' + rb'[A-Za-z0-9_-]{15,}'),
     re.compile(b'gh' + rb'[opusr]_[A-Za-z0-9]{20,}'),

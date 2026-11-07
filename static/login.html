@@ -89,11 +89,16 @@
         <form id="login-form">
             <div class="form-group">
                 <label>账号 / 用户名</label>
-                <input id="username" type="text" placeholder="默认: admin" required autofocus>
+                <input id="username" type="text" placeholder="默认: admin" required autofocus autocomplete="username">
             </div>
             <div class="form-group">
                 <label>登录密码</label>
-                <input id="password" type="password" placeholder="请输入密码" required>
+                <input id="password" type="password" placeholder="请输入密码" required autocomplete="current-password">
+            </div>
+            <div class="form-group" id="mfa-login-field" style="display:none;">
+                <label for="mfa-login-code">验证器验证码 / 恢复码</label>
+                <input id="mfa-login-code" type="text" placeholder="手机里的 6 位验证码，或一条恢复码" autocomplete="one-time-code" maxlength="64">
+                <p style="font-size:12px;color:#94a3b8;margin-top:8px;">验证码每 30 秒更新，一次使用后不可重复。手机无法使用时，可输入保存的恢复码。</p>
             </div>
             <button class="btn-submit" type="submit">立即登录</button>
             <div class="err-msg" id="err-box">账号或密码不正确</div>
@@ -106,12 +111,15 @@
             errBox.style.display = "none";
             const u = document.getElementById("username").value.trim();
             const p = document.getElementById("password").value;
+            const code = document.getElementById("mfa-login-code").value.trim();
+            const button = document.querySelector(".btn-submit");
+            button.disabled = true;
 
             try {
                 const res = await fetch("/__suite/api/login", {
                     method: "POST",
                     headers: {"Content-Type": "application/json"},
-                    body: JSON.stringify({ username: u, password: p })
+                    body: JSON.stringify({ username: u, password: p, code })
                 });
                 let data = {};
                 try {
@@ -122,12 +130,19 @@
                 if (data.ok) {
                     window.location.reload();
                 } else {
+                    if (data.mfa_required) {
+                        document.getElementById("mfa-login-field").style.display = "block";
+                        document.getElementById("mfa-login-code").focus();
+                        button.textContent = "验证并登录";
+                    }
                     errBox.textContent = data.error || "登录失败";
                     errBox.style.display = "block";
                 }
             } catch (err) {
                 errBox.textContent = "网络连接异常: " + (err.message || "");
                 errBox.style.display = "block";
+            } finally {
+                button.disabled = false;
             }
         });
     </script>

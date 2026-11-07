@@ -22,6 +22,8 @@ config.json
 profiles.json
 proxies.json
 initial-credentials.txt
+antigravity-recovery-codes.txt
+*recovery-codes*.txt
 jetski-standalone-oauth-token
 .env
 .env.*

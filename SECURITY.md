@@ -17,3 +17,10 @@ Include the affected version, a minimal reproduction using dummy data, expected 
 - Back up private data before upgrading. Store exports privately: they contain account credentials and shared conversations.
 
 See [deployment](docs/deployment.md) and [privacy boundaries](docs/privacy.md).
+
+
+## Optional authenticator verification
+
+Enable authenticator-app two-factor login from the web service settings. Binding requires the current password and a valid TOTP code; disabling and regenerating recovery codes require the password plus a valid second factor. Setup QR codes are generated locally, temporary setup expires after ten minutes, used TOTP counters are rejected and recovery codes are stored as hashes and consumed once. Security changes revoke previous sessions and their active IDE connections.
+
+Authenticator secrets are stored in the private server config, which the service must protect through filesystem permissions. Two-factor login does not reduce the IDE service user's filesystem privileges. Back up and protect recovery codes; without the authenticator or a recovery code, restore a private server backup through trusted administrative access.

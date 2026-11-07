@@ -471,8 +471,33 @@
 <div class="modal-header">服务设置</div><div class="modal-body">
 <div class="form-group"><label for="settings-port">监听端口（下次管理服务启动时生效）</label><input class="form-control" id="settings-port" type="number" min="1" max="65535"></div>
 <div class="form-group"><label for="settings-user">管理员用户名</label><input class="form-control" id="settings-user" autocomplete="username"></div>
-<div class="form-group"><label for="settings-current">当前密码（修改账号或密码时填写）</label><input class="form-control" id="settings-current" type="password" autocomplete="current-password"></div>
+<div class="form-group"><label for="settings-current">当前密码（修改账号密码或操作验证器时填写）</label><input class="form-control" id="settings-current" type="password" autocomplete="current-password"></div>
 <div class="form-group"><label for="settings-new">新密码（至少 12 个字符，留空保持原密码）</label><input class="form-control" id="settings-new" type="password" autocomplete="new-password"></div>
+<div id="mfa-settings" style="padding:16px;border:1px solid #334155;border-radius:8px;margin-top:18px;">
+    <strong>验证器两步验证（可选）</strong>
+    <p id="mfa-status" style="font-size:13px;color:#94a3b8;margin:8px 0;">正在读取状态…</p>
+    <p style="font-size:12px;color:#94a3b8;margin-bottom:12px;">支持 Google Authenticator、Microsoft Authenticator、Aegis 等。开启后，登录需密码加手机验证码。二维码由本服务生成。</p>
+    <div id="mfa-disabled-actions"><button type="button" class="btn btn-secondary" onclick="beginAuthenticatorSetup()">绑定并开启验证器</button></div>
+    <div id="mfa-enabled-actions" style="display:none;">
+        <div class="form-group"><label for="mfa-current-code">当前验证码 / 恢复码（修改账号密码、关闭或重置恢复码时填写）</label><input class="form-control" id="mfa-current-code" autocomplete="one-time-code" placeholder="6 位验证码或一条恢复码"></div>
+        <button type="button" class="btn btn-danger" onclick="disableAuthenticator()">关闭验证器</button>
+        <button type="button" class="btn btn-secondary" onclick="regenerateRecoveryCodes()">重新生成恢复码</button>
+    </div>
+    <div id="mfa-setup" style="display:none;margin-top:16px;">
+        <p style="font-size:13px;margin-bottom:10px;">在手机验证器中添加账号并扫描二维码，再填写验证码确认开启。10 分钟内完成。</p>
+        <div style="display:inline-block;background:white;padding:12px;border-radius:8px;"><img id="mfa-qr" alt="验证器绑定二维码" style="width:220px;height:220px;"></div>
+        <div class="form-group" style="margin-top:12px;"><label for="mfa-setup-secret">不能扫码时，手动添加此密钥（请勿分享）</label><input class="form-control" id="mfa-setup-secret" readonly></div>
+        <div class="form-group"><label for="mfa-setup-code">手机上的 6 位验证码</label><input class="form-control" id="mfa-setup-code" autocomplete="one-time-code" inputmode="numeric" maxlength="6" placeholder="输入验证码确认"></div>
+        <button type="button" class="btn btn-primary" onclick="enableAuthenticator()">确认开启</button>
+        <button type="button" class="btn btn-secondary" onclick="cancelAuthenticatorSetup()">取消绑定</button>
+    </div>
+    <div id="mfa-recovery" style="display:none;margin-top:16px;">
+        <strong style="color:#fbbf24;">请保存恢复码</strong>
+        <p style="font-size:12px;color:#94a3b8;margin:8px 0;">只在这次操作后显示，每条只能使用一次。手机丢失时，登录仍需管理员密码加恢复码。关闭窗口前请下载保存。</p>
+        <textarea class="form-control" id="mfa-recovery-codes" rows="6" readonly></textarea>
+        <button type="button" class="btn btn-secondary" style="margin-top:8px;" onclick="downloadRecoveryCodes()">下载恢复码</button>
+    </div>
+</div>
 </div><div class="modal-footer"><button class="btn btn-secondary" onclick="closeModals()">取消</button>
 <button class="btn btn-primary" onclick="saveServiceSettings()">保存设置</button></div></div></div>
 <div class="modal-mask" id="modal-file-editor"><div class="modal" style="width:min(90vw,800px)">
@@ -505,6 +530,7 @@
     </div></div>
     <div id="transfer-status" role="status" style="display:none;position:fixed;bottom:20px;left:20px;z-index:10001;max-width:calc(100vw - 40px);padding:14px 18px;background:#1e293b;color:#f1f5f9;border:1px solid #38bdf8;border-radius:8px;font-size:14px;"></div>
     <script src="/__suite/proxy-editor.js"></script>
+    <script src="/__suite/security.js"></script>
     <script>
         let currentStatus = null;
         let coreStatus = null;
@@ -518,12 +544,16 @@
 
         let settingsOriginalUser = "";
         async function openServiceSettings() {
+            await cancelAuthenticatorSetup();
             const data = await (await fetch("/__suite/api/system/config")).json();
             settingsOriginalUser = data.auth_user;
             document.getElementById("settings-port").value = data.listen_port;
             document.getElementById("settings-user").value = data.auth_user;
             document.getElementById("settings-current").value = "";
             document.getElementById("settings-new").value = "";
+            clearRecoveryDisplay();
+            document.getElementById("mfa-current-code").value = "";
+            await loadAuthenticatorStatus();
             document.getElementById("modal-service-settings").classList.add("active");
         }
         async function saveServiceSettings() {
@@ -531,7 +561,8 @@
             const password = document.getElementById("settings-new").value;
             const result = await (await fetch("/__suite/api/system/config", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
                 listen_port:Number(document.getElementById("settings-port").value),auth_user:user,
-                current_password:document.getElementById("settings-current").value,auth_pass:password})})).json();
+                current_password:document.getElementById("settings-current").value,auth_pass:password,
+                code:document.getElementById("mfa-current-code").value.trim()})})).json();
             closeModals();
             if (result.restart_required) alert("设置已保存。新端口将在下次管理服务启动时生效，请同时调整访问入口。");
             if (password || user !== settingsOriginalUser) window.location.href = "/";
@@ -808,6 +839,11 @@
             document.getElementById("btn-oauth-open").style.display = "block";
         }
         function closeModals() {
+            cancelAuthenticatorSetup().catch(() => {});
+            clearRecoveryDisplay();
+            document.getElementById("settings-current").value = "";
+            document.getElementById("settings-new").value = "";
+            document.getElementById("mfa-current-code").value = "";
             document.querySelectorAll(".modal-mask").forEach(m => m.classList.remove("active"));
             currentEditingProxyId = null;
             originalProxyLink = "";
