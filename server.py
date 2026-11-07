@@ -41,6 +41,7 @@ class SuiteState:
         self.discovery_enabled=cfg.get('discover_existing',supervisor is None)
         self.discovered=dict(binary=None,installations=[],configurations=[])
         self.discovery_task=None;self.discovery_running=False
+        self.initial_import_pending=False;self.native_requires_restart=False;self.native_runtime_proxy_id=None
         from suite_updater import SuiteUpdater
         self.updater=SuiteUpdater(self)
     async def refresh_existing(self, import_logins=False):
@@ -55,8 +56,10 @@ class SuiteState:
                 self.cfg['antigravity_bin']=found['binary'];self.supervisor.antigravity_bin=found['binary']
                 if changed:self.persist()
             self.profiles.native_runtime.refresh_installations(found['configurations'])
-            if import_logins:
+            if import_logins:self.initial_import_pending=True
+            if self.initial_import_pending and not self.updater.busy():
                 imported=await asyncio.to_thread(self.profiles.import_installed_accounts_once,self.cfg.get('machine_name'))
+                self.initial_import_pending=False
                 if not self.active and imported:
                     self.active=imported[0];self.persist()
                 for identifier in imported:
@@ -76,8 +79,55 @@ class SuiteState:
                     adopted=await asyncio.to_thread(self.supervisor.adopt_existing)
                     if adopted:
                         self.active=p['id'];self.loaded=p['id'];self.persist()
+                        self.native_runtime_proxy_id=None
                         break
                 if self.profiles.get_profile(self.active):self.bind_engine_home(self.active)
+            await self.sync_native_login()
+
+    async def sync_native_login(self, force=False):
+        if not self.discovery_enabled or self.updater.busy():return
+        observed=self.profiles.native_runtime.observe_login(force)
+        if not observed:return
+        native=observed['native'];token=observed['token']
+        if not token:
+            if self.active is not None or not self.cfg.get('native_logged_out'):
+                self.active=None;self.loaded=None;self.native_requires_restart=False
+                self.profiles.native_runtime.detach()
+                self.cfg['native_logged_out']=True;self.persist()
+            return
+        profile=self.profiles.find_saved_account(token,self.active)
+        created=False
+        if not profile:
+            profile=self.profiles.create_profile(token['email'] or '账号 '+str(len(self.profiles.list_profiles())+1),
+                self.native_runtime_proxy_id or '',token['email'])
+            profile['pending_native_import']=True;self.profiles._save()
+            created=True
+        saved=self.profiles.saved_token_metadata(profile['id'])
+        needs_snapshot=created or not any(p['fingerprint']==token['fingerprint'] for p in saved)
+        if needs_snapshot:
+            try:await asyncio.to_thread(self.profiles.capture_installed_account,profile,native,token)
+            except Exception:
+                if created:self.profiles.delete_profile(profile['id'])
+                raise
+        if created:profile.pop('pending_native_import',None);self.profiles._save()
+        common=self.profiles.native_runtime.binding
+        changed=self.active!=profile['id'] or not common or common['profile_id']!=profile['id'] or self.cfg.get('native_logged_out')
+        email_changed=bool(token['email'] and profile.get('email')!=token['email'])
+        if not changed and not email_changed and not needs_snapshot:
+            running=bool(self.supervisor.process and self.supervisor.process.poll() is None)
+            self.native_requires_restart=running and (profile.get('proxy_id') or None)!=self.native_runtime_proxy_id
+            return
+        if email_changed:self.profiles.update_profile(profile['id'],email=token['email'])
+        running=bool(self.supervisor.process and self.supervisor.process.poll() is None)
+        self.profiles.native_runtime.associate(profile['id'],native)
+        self.bind_engine_home(profile['id'])
+        self.active=profile['id'];self.loaded=profile['id'];self.cfg['native_logged_out']=False
+        if not running and hasattr(self.supervisor,'adopt_existing'):
+            running=await asyncio.to_thread(self.supervisor.adopt_existing)
+            if running:self.native_runtime_proxy_id=None
+        self.native_requires_restart=running and (profile.get('proxy_id') or None)!=self.native_runtime_proxy_id
+        self.persist()
+        if not self.native_requires_restart:self.request_detection(profile['id'])
     def prune_imports(self):
         now=time.time()
         for token,item in list(self.pending_imports.items()):
@@ -110,7 +160,7 @@ class SuiteState:
     def request_start(self, target, restart=False):
         target=self.profiles.native_runtime.resolve(target)
         if not self.profiles.get_profile(target): raise ValueError('档案不存在')
-        if target==self.active and self.supervisor.active_port and not self.busy and not restart: return
+        if target==self.active and self.supervisor.active_port and not self.busy and not restart and not self.native_requires_restart: return
         if self.launch_task and not self.launch_task.done():
             if self.starting_profile_id==target: return
             raise ValueError('已有档案正在启动，请等待完成')
@@ -143,6 +193,7 @@ class SuiteState:
         if not p: raise ValueError('档案不存在')
         if self.installer.task and not self.installer.task.done(): raise ValueError('本体操作中，请等待完成')
         async with self.lock:
+            await self.sync_native_login(force=True)
             old=self.active; old_profile=self.profiles.get_profile(old); old_loaded=self.loaded
             old_running=bool(self.supervisor.process and self.supervisor.process.poll() is None)
             proxy_url=self.proxy_url(p); self.busy=True; self.supervisor.is_restarting=True
@@ -177,6 +228,8 @@ class SuiteState:
                 self.loaded=target
                 proxy_url=await self.prepare_engine_proxy(p)
                 await asyncio.to_thread(self.supervisor.start_antigravity,proxy_url)
+                self.native_runtime_proxy_id=p.get('proxy_id') or None;self.native_requires_restart=False
+                self.cfg['native_logged_out']=False
                 self.active=target; self.last_error=''; self.persist()
             except Exception as e:
                 self.last_error=str(e)
@@ -191,12 +244,15 @@ class SuiteState:
                         if old_running:
                             await self.prepare_engine_proxy(old_profile)
                             await asyncio.to_thread(self.supervisor.start_antigravity,self.engine_proxy_url)
+                            self.native_runtime_proxy_id=old_profile.get('proxy_id') or None
+                            self.native_requires_restart=False
                     except Exception: self.last_error+='；原档案恢复启动失败，请查看日志'
                 self.active=old; self.loaded=old_loaded; self.persist()
                 raise
             finally:
                 self.busy=False; self.supervisor.is_restarting=False
     async def stop_and_save(self):
+        await self.sync_native_login(force=True)
         self.busy=True; self.supervisor.is_restarting=True
         try:
             await asyncio.to_thread(self.supervisor.stop_antigravity)
@@ -208,7 +264,7 @@ class SuiteState:
         p=self.profiles.get_profile(self.active)
         px=self.proxies.get_proxy(p.get('proxy_id')) if p and p.get('proxy_id') else None
         if px: px={k:v for k,v in px.items() if k!='password'}
-        port=None if self.busy or self.starting_profile_id else self.supervisor.active_port
+        port=None if self.busy or self.starting_profile_id or self.native_requires_restart else self.supervisor.active_port
         return dict(active_profile=p,active_profile_id=self.active,active_proxy=px,
                     default_profile_id=self.cfg.get('default_profile_id'),antigravity_ready=bool(port),
                     antigravity_port=port,active_port=port,busy=self.busy,last_error=self.last_error,
@@ -216,6 +272,7 @@ class SuiteState:
                     privacy=dict(enabled=True,browser_external_connections='blocked',client_ip_headers='removed',profile_homes='separate'),
                     history=self.profiles.history.summary(),
                     common_runtime=self.profiles.native_runtime.status(),suite_version=(SUITE_DIR/'VERSION').read_text().strip(),
+                    native_session=dict(state='logged_out' if self.cfg.get('native_logged_out') else 'logged_in' if p else 'unknown'),
                     profiles=self.profiles.list_profiles(),proxies=[{k:v for k,v in p.items() if k!='password'} for p in self.proxies.list_proxies()],system=system_memory())
 
 def system_memory():
@@ -338,6 +395,7 @@ async def api(request):
             p_id=request.query.get('id'); s.profiles.profile_dir(p_id)
             if s.profiles.get_profile(p_id).get('kind')=='existing':raise ValueError('已有共享配置不能删除，原配置由现有反重力使用')
             async with s.lock:
+                await s.sync_native_login(force=True)
                 if s.active==p_id: await s.stop_and_save(); s.active=None
                 await asyncio.to_thread(s.profiles.delete_profile,p_id)
                 if s.cfg.get('default_profile_id')==p_id: s.cfg['default_profile_id']=None
@@ -615,6 +673,9 @@ async def page(request):
     if request.path=='/__suite/portal' or (request.path=='/' and 'portal' in request.query):
         return web.FileResponse(s.static/'portal.html',headers={'Cache-Control':'no-store'})
     if request.path.startswith('/__suite/'): raise web.HTTPNotFound()
+    if s.native_requires_restart or s.cfg.get('native_logged_out'):
+        if request.method in ('GET','HEAD'):raise web.HTTPFound('/?portal=1')
+        return web.json_response(dict(ok=False,error='当前原生会话未登录，或需要按该配置的代理重新启动，请在配置页面选择账号'),status=409)
     return await proxy(request)
 
 async def resources(app):
@@ -634,6 +695,7 @@ async def resources(app):
         s.discovery_task=asyncio.create_task(scan_existing())
     async def autoboot():
         try:
+            if s.cfg.get('native_logged_out'):return
             target=s.cfg.get('default_profile_id')
             common=s.profiles.native_runtime
             migrate=bool(common.selected and target and (not common.binding or common.binding['profile_id']!=target))

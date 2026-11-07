@@ -113,7 +113,7 @@ class ProfileManager:
         if not path.resolve().is_relative_to(home.resolve()):raise ValueError('共享聊天记录不能通过档案文件编辑器覆盖')
         return path
     def _save(self): atomic_json(self.meta_file, self.profiles)
-    def list_profiles(self): return copy.deepcopy([p for p in self.profiles if not p.get('internal_runtime')])
+    def list_profiles(self): return copy.deepcopy([p for p in self.profiles if not p.get('internal_runtime') and not p.get('pending_native_import')])
 
     @staticmethod
     def installed_token(file):
@@ -132,7 +132,25 @@ class ProfileManager:
             return dict(fingerprint=hashlib.sha256(refresh.encode()).hexdigest(),email=email if isinstance(email,str) and len(email)<=320 else '')
         except (OSError,ValueError,TypeError,AttributeError):return None
 
-    def capture_installed_account(self, profile, native):
+    def saved_token_metadata(self, profile_id):
+        folder=self.profile_dir(profile_id)
+        return [value for value in (self.installed_token(folder/'store/jetski-standalone-oauth-token'),
+            self.installed_token(folder/'home/.gemini/jetski-standalone-oauth-token')) if value]
+
+    def account_matches(self, profile_id, token):
+        if not token:return False
+        profile=self.get_profile(profile_id)
+        saved=self.saved_token_metadata(profile_id)
+        if any(value['fingerprint']==token['fingerprint'] for value in saved):return True
+        emails=[profile.get('email','')]+[value['email'] for value in saved]
+        return bool(token['email'] and any(value.lower()==token['email'].lower() for value in emails if value))
+
+    def find_saved_account(self, token, preferred_id=None):
+        candidates=[p for p in self.profiles if not p.get('internal_runtime') and not p.get('pending_native_import') and p.get('kind')!='existing']
+        candidates.sort(key=lambda p:p['id']!=preferred_id)
+        return next((p for p in candidates if self.account_matches(p['id'],token)),None)
+
+    def capture_installed_account(self, profile, native, expected_token=None):
         from native_runtime import targets
         folder=self.profile_dir(profile['id'])
         stage=Path(tempfile.mkdtemp(prefix='.installed-account-',dir=folder))
@@ -164,6 +182,10 @@ class ProfileManager:
                         for suffix in ('-wal','-shm','-journal'):
                             (file.parent/(file.name+suffix)).unlink(missing_ok=True)
                 elif source.is_file():shutil.copy2(source,target)
+            if expected_token:
+                captured=self.installed_token(stage/'jetski-standalone-oauth-token')
+                if not captured or captured['fingerprint']!=expected_token['fingerprint']:
+                    raise ValueError('原生登录在提取期间发生变化，请稍后重试')
             old=folder/'store'
             if old.exists():
                 backup=self.data_dir/'installed-account-backups'/str(time.time_ns())/profile['id']
@@ -270,10 +292,15 @@ class ProfileManager:
         self.profiles=[p for p in self.profiles if p['id']!=p_id]
         self._save()
         if self.native_runtime.binding and self.native_runtime.binding['profile_id']==p_id:
+            self.native_runtime.ignore_current_login()
             self.native_runtime.binding=None
             self.native_runtime.file.unlink(missing_ok=True)
     def save_active_to_profile(self,p_id):
         profile=self.get_profile(p_id)
+        native=self.native_runtime.spec_for(p_id)
+        if native and profile and profile.get('kind')!='existing':
+            current=self.installed_token(Path(native['native_home'])/'.gemini/jetski-standalone-oauth-token')
+            if not self.account_matches(p_id,current):return False
         if profile and profile.get('kind')=='existing':
             # Snapshot credentials but never overwrite the native runtime during restore.
             self.bind_home(p_id)

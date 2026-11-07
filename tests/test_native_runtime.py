@@ -19,9 +19,9 @@ def fixture(tmp_path,monkeypatch):
 
 
 def account(manager,name):
-    profile=manager.create_profile(name,'fixed-node-binding')
+    profile=manager.create_profile(name,'fixed-node-binding',name+'@example.invalid')
     store=manager.profile_dir(profile['id'])/'store'
-    atomic_json(store/'jetski-standalone-oauth-token',dict(token=dict(refresh_token='dummy-'+name)))
+    atomic_json(store/'jetski-standalone-oauth-token',dict(token=dict(refresh_token='dummy-'+name),id_token_email=name+'@example.invalid'))
     atomic_json(store/'Antigravity_config/User/settings.json',dict(account=name))
     return profile
 
@@ -38,7 +38,7 @@ def test_desktop_and_web_share_selected_login_but_account_archives_and_ids_are_k
     assert json.loads(native_token.read_text())['token']['refresh_token']=='dummy-A'
     assert manager.native_runtime.resolve(existing['id'])==a['id']
     # Simulates a refresh/login performed by the actual desktop app.
-    atomic_json(native_token,dict(token=dict(refresh_token='desktop-refreshed-A')))
+    atomic_json(native_token,dict(token=dict(refresh_token='desktop-refreshed-A'),id_token_email='A@example.invalid'))
     manager.save_active_to_profile(a['id'])
     assert json.loads((manager.profile_dir(a['id'])/'home/.gemini/jetski-standalone-oauth-token').read_text())['token']['refresh_token']=='desktop-refreshed-A'
     manager.native_runtime.activate(b['id']);manager.restore_profile(b['id'])
@@ -56,7 +56,7 @@ def test_restart_uses_native_updated_config_and_never_restores_an_old_snapshot(t
     manager,home,existing=fixture(tmp_path,monkeypatch)
     a=account(manager,'A');manager.native_runtime.activate(a['id']);manager.restore_profile(a['id'])
     token=home/'.gemini/jetski-standalone-oauth-token'
-    atomic_json(token,dict(token=dict(refresh_token='new-desktop-login')))
+    atomic_json(token,dict(token=dict(refresh_token='new-desktop-login'),id_token_email='A@example.invalid'))
     reloaded=ProfileManager(manager.data_dir,manager.profiles_dir)
     reloaded.native_runtime.select(reloaded.list_profiles())
     assert reloaded.native_runtime.activate(a['id'])

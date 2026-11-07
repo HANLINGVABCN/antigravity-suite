@@ -37,6 +37,9 @@ class NativeRuntime:
         self.registry_file=manager.data_dir/'native-installations.json'
         self.installations=json.loads(self.registry_file.read_text(encoding='utf-8')) if self.registry_file.is_file() else []
         self.selected=None
+        self._login_observation=None
+        self.ignore_file=manager.data_dir/'native-login-ignore.json'
+        self._ignored_login=json.loads(self.ignore_file.read_text(encoding='utf-8')) if self.ignore_file.is_file() else None
         if self.binding:
             self.validate(self.binding['native'])
             if not manager.get_profile(self.binding['profile_id']):
@@ -97,6 +100,45 @@ class NativeRuntime:
         if self.binding and profile_id==self.binding['native']['id']:
             return self.binding['profile_id']
         return profile_id
+
+    def observe_login(self, force=False):
+        native=self.binding['native'] if self.binding else self.selected
+        if not native:return None
+        file=Path(native['native_home'])/'.gemini/jetski-standalone-oauth-token'
+        token=self.manager.installed_token(file)
+        if token is None and file.is_file():
+            try:
+                value=json.loads(file.read_text(encoding='utf-8'))
+                if not isinstance(value,dict) or not isinstance(value.get('token',{}),dict):return None
+                if value.get('token',{}).get('refresh_token'):return None
+            except (OSError,ValueError):return None
+        key=(native['id'],token['fingerprint'] if token else None,token['email'] if token else '')
+        ignored=self._ignored_login
+        if ignored:
+            same=token and ignored['native_id']==native['id'] and (ignored['fingerprint']==token['fingerprint'] or
+                (token['email'] and ignored.get('email','').lower()==token['email'].lower()))
+            if same:return None
+            self._ignored_login=None;self.ignore_file.unlink(missing_ok=True)
+        if not force and self._login_observation!=key:
+            self._login_observation=key;return None
+        self._login_observation=key
+        return dict(native=native,token=token,state='logged_in' if token else 'logged_out')
+
+    def associate(self, profile_id, native):
+        self.binding=dict(profile_id=profile_id,native=dict(native))
+        atomic_json(self.file,self.binding)
+
+    def detach(self):
+        self.binding=None
+        self.file.unlink(missing_ok=True)
+
+    def ignore_current_login(self):
+        native=self.binding['native'] if self.binding else self.selected
+        if not native:return
+        token=self.manager.installed_token(Path(native['native_home'])/'.gemini/jetski-standalone-oauth-token')
+        if token:
+            self._ignored_login=dict(native_id=native['id'],**token)
+            atomic_json(self.ignore_file,self._ignored_login)
 
     def activate(self, profile_id):
         from profile_manager import safe_copytree,remove_path

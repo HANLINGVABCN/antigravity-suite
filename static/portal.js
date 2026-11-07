@@ -48,6 +48,11 @@ let currentStatus = null;
         }
         function showSummary() {
             const notice = document.getElementById("google-auth-notice");
+            if (currentStatus?.native_session?.state === 'logged_out') {
+                notice.className = 'summary pending';
+                notice.textContent = '反重力当前未登录。已保存的账号配置仍保留，可以选择配置重新启动，或在反重力中登录另一个账号。';
+                return;
+            }
             const result = currentStatus?.diagnostics?.[currentStatus.active_profile?.id];
             notice.className = 'summary ' + (result?.status || 'pending');
             notice.textContent = result ? ((result.status === 'abnormal' ? '异常：' : '') + result.reason) :

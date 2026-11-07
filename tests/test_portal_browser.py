@@ -292,3 +292,19 @@ def test_legacy_runtime_alias_does_not_create_special_or_duplicate_account_card(
     assert card.get_attribute('data-card-id')==portal['profile']['id']
     pw.expect(card.get_by_role('button',name='🗑️ 删除',exact=True)).to_be_visible()
     assert manager.get_profile(legacy['id'])['internal_runtime']
+
+
+def test_logout_notice_keeps_a_card_and_new_b_has_a_different_card(portal):
+    page=portal['page'];state=portal['state'];a=portal['profile'];original_name=a['name']
+    state.active=None;state.loaded=None;state.cfg['native_logged_out']=True
+    page.reload()
+    pw.expect(page.locator('#google-auth-notice')).to_contain_text('反重力当前未登录')
+    pw.expect(page.locator('#profile-container [data-card-id]')).to_have_count(1)
+    pw.expect(page.locator('#profile-container')).to_contain_text(original_name)
+    b=state.profiles.create_profile('b@example.invalid',email='b@example.invalid')
+    state.active=b['id'];state.cfg['native_logged_out']=False
+    page.reload()
+    pw.expect(page.locator('#profile-container [data-card-id]')).to_have_count(2)
+    ids=page.locator('#profile-container [data-card-id]').evaluate_all('elements => elements.map(element => element.dataset.cardId)')
+    assert a['id'] in ids and b['id'] in ids and a['id']!=b['id']
+    assert state.profiles.get_profile(a['id'])['name']==original_name and state.profiles.get_profile(a['id'])['email']=='dummy-account@example.invalid'
