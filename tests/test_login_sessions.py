@@ -87,6 +87,21 @@ def test_start_after_stopping_login_environment_keeps_waiting_and_does_not_resto
     asyncio.run(scenario())
 
 
+@pytest.mark.skipif(os.name=='nt',reason='Full runtime exit uses Linux shared-history symlinks')
+def test_exit_from_stopped_profile_preserves_its_proxy_for_login_environment(tmp_path,monkeypatch):
+    async def scenario():
+        state,a,home=setup(tmp_path);state.supervisor.stop_antigravity();state.native_runtime_proxy_id=None
+        captures=[]
+        async def start_empty(spec):
+            captures.append(state.cfg['login_proxy_id']);state.login_environment_open=True
+        async def probe(*args,**kwargs):return dict(token_present=False)
+        monkeypatch.setattr(state.session_ops,'start_empty',start_empty)
+        monkeypatch.setattr('auth_probe.auth_status',probe)
+        await state.session_ops.exit()
+        assert captures==['node-A'] and state.native_runtime_proxy_id=='node-A'
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize('probe', [False,None])
 @pytest.mark.skipif(os.name=='nt',reason='Full runtime exit uses Linux shared-history symlinks')
 def test_exit_preserves_saved_session_and_chats_and_rolls_back_unconfirmed_clear(tmp_path,monkeypatch,probe):

@@ -119,6 +119,7 @@ class SessionOperations:
                 atomic_json(backup/'context.json',dict(profile_id=old_id,runtime=spec))
                 s.active=None;s.loaded=None;s.profiles.native_runtime.detach();s.profiles.native_runtime.clear_ignored_login()
                 s.sessions.exited(spec);s.cfg['native_logged_out']=True;s.cfg['login_environment']=True
+                if not was_running and old_profile:s.native_runtime_proxy_id=old_profile.get('proxy_id') or None
                 s.cfg['login_proxy_id']=s.native_runtime_proxy_id
                 s.native_requires_restart=False;s.persist()
                 s.exit_state.update(phase='opening',message='正在打开未登录界面')
