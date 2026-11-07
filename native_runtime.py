@@ -1,5 +1,6 @@
 """A single existing runtime shared by desktop and the currently selected account."""
 import json
+import hashlib
 import os
 import shutil
 import time
@@ -33,6 +34,8 @@ class NativeRuntime:
         self.manager=manager
         self.file=manager.data_dir/'shared-native-runtime.json'
         self.binding=json.loads(self.file.read_text(encoding='utf-8')) if self.file.is_file() else None
+        self.registry_file=manager.data_dir/'native-installations.json'
+        self.installations=json.loads(self.registry_file.read_text(encoding='utf-8')) if self.registry_file.is_file() else []
         self.selected=None
         if self.binding:
             self.validate(self.binding['native'])
@@ -48,8 +51,34 @@ class NativeRuntime:
         if not isinstance(spec.get('native_uid'),int):
             raise ValueError('共用配置所属用户无效')
 
-    def select(self, profiles):
-        available=[p for p in profiles if p.get('kind')=='existing' and p.get('available')]
+    def register_installation(self, spec):
+        key=str(Path(spec['home']).resolve())+'\0'+str(Path(spec['config_dir']).resolve())
+        identifier=hashlib.sha256(key.encode()).hexdigest()[:32]
+        value=dict(id=identifier,native_home=spec['home'],native_config_dir=spec['config_dir'],native_uid=spec['uid'],
+            native_binary=spec['binary'],native_display=spec['display'],native_env=spec.get('session_env',{}),available=spec['available'])
+        self.validate(value)
+        item=next((p for p in self.installations if p['id']==identifier),None)
+        if item is None:self.installations.append(value);item=value
+        elif item!=value:item.clear();item.update(value)
+        else:return item
+        atomic_json(self.registry_file,self.installations)
+        return item
+
+    def refresh_installations(self, specs):
+        seen=set()
+        for spec in specs:seen.add(self.register_installation(spec)['id'])
+        changed=False
+        for item in self.installations:
+            if item['id'] not in seen and item.get('available'):
+                item['available']=False;changed=True
+        if changed:atomic_json(self.registry_file,self.installations)
+        self.select()
+
+    def select(self, profiles=None):
+        # Old records remain readable for migration, but runtime discovery creates no account cards.
+        available=[p for p in self.installations if p.get('available')]
+        if not self.installations and profiles is not None:
+            available=[p for p in profiles if p.get('kind')=='existing' and p.get('available')]
         if self.binding:
             self.selected=next((p for p in available if p['id']==self.binding['native']['id']),None)
         elif len(available)==1:

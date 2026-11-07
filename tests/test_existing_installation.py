@@ -160,7 +160,7 @@ def test_log_port_from_other_process_is_not_selected(tmp_path,monkeypatch):
     assert s.detect_port_from_log() is None
 
 
-def test_core_button_is_based_on_discovery_and_existing_profile_id_is_stable(tmp_path,monkeypatch):
+def test_core_button_discovers_installation_without_creating_unlogged_account(tmp_path,monkeypatch):
     async def scenario():
         data=tmp_path/'data';cfg=config(data);cfg['discover_existing']=True
         home=tmp_path/'native';home.mkdir();native=home/'.config/Antigravity';native.mkdir(parents=True)
@@ -177,13 +177,16 @@ def test_core_button_is_based_on_discovery_and_existing_profile_id_is_stable(tmp
                 await login(client,url)
                 status=await (await client.get(url+'/__suite/api/system/core-status')).json()
                 assert status['installed'] and status['usable'] and status['button_label']=='卸载反重力'
-                p=app['state'].profiles.list_profiles()[0];identifier=p['id']
-                assert p['kind']=='existing' and p['native_home']==str(home)
-                await app['state'].refresh_existing();assert app['state'].profiles.list_profiles()[0]['id']==identifier
+                assert app['state'].profiles.list_profiles()==[]
+                installation=app['state'].profiles.native_runtime.installations[0];identifier=installation['id']
+                assert installation['native_home']==str(home)
+                await app['state'].refresh_existing()
+                assert app['state'].profiles.native_runtime.installations[0]['id']==identifier
+                assert app['state'].profiles.list_profiles()==[]
                 result.update(binary=None,installations=[],configurations=[])
                 await app['state'].refresh_existing()
                 status=await (await client.get(url+'/__suite/api/system/core-status')).json()
                 assert not status['installed'] and status['button_label']=='安装反重力'
-                assert app['state'].profiles.get_profile(identifier)['available'] is False
+                assert app['state'].profiles.native_runtime.installations[0]['available'] is False
         finally:await runner.cleanup()
     asyncio.run(scenario())

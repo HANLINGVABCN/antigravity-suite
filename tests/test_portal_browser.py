@@ -271,3 +271,24 @@ def test_update_dialog_on_short_mobile_window_checks_version_and_shows_failure(p
     assert page.locator('#modal-suite-update:visible').count()==1
     dialog.locator('.dialog-close').click()
     pw.expect(page.locator('#btn-suite-update')).to_be_visible()
+
+
+def test_legacy_runtime_alias_does_not_create_special_or_duplicate_account_card(portal,tmp_path):
+    state=portal['state'];manager=state.profiles;page=portal['page']
+    home=tmp_path.parent/(tmp_path.name+'-installed-native');config=home/'.config/Antigravity';config.mkdir(parents=True)
+    atomic_json(home/'.gemini/jetski-standalone-oauth-token',dict(token=dict(refresh_token='dummy-existing-login'),id_token_email='dummy-account@example.invalid'))
+    spec=dict(home=str(home),config_dir=str(config),uid=0,binary='/opt/antigravity/antigravity',display=':1',session_env={},available=True)
+    legacy=manager.register_existing(spec)
+    manager.native_runtime.refresh_installations([spec])
+    manager.native_runtime.binding=dict(profile_id=portal['profile']['id'],native=manager.native_runtime.installations[0])
+    manager.import_installed_accounts_once()
+    page.reload()
+    pw.expect(page.locator('#profile-container [data-card-id]')).to_have_count(1)
+    pw.expect(page.locator('#profile-container')).not_to_contain_text('已有共享配置')
+    pw.expect(page.locator('#profile-container')).not_to_contain_text('已有共用运行配置')
+    pw.expect(page.locator('#profile-container')).not_to_contain_text('配置位置')
+    assert page.locator('#profile-container .existing-item').count()==0
+    card=page.locator('#profile-container [data-card-id]')
+    assert card.get_attribute('data-card-id')==portal['profile']['id']
+    pw.expect(card.get_by_role('button',name='🗑️ 删除',exact=True)).to_be_visible()
+    assert manager.get_profile(legacy['id'])['internal_runtime']

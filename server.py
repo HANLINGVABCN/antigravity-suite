@@ -43,7 +43,7 @@ class SuiteState:
         self.discovery_task=None;self.discovery_running=False
         from suite_updater import SuiteUpdater
         self.updater=SuiteUpdater(self)
-    async def refresh_existing(self):
+    async def refresh_existing(self, import_logins=False):
         if not self.discovery_enabled:return
         from discovery import discover
         async with self.lock:
@@ -54,22 +54,23 @@ class SuiteState:
                 self.cfg['installation_directory']=str(Path(found['binary']).parent)
                 self.cfg['antigravity_bin']=found['binary'];self.supervisor.antigravity_bin=found['binary']
                 if changed:self.persist()
-            seen=set()
-            for spec in found['configurations']:
-                previous=next((p for p in self.profiles.list_profiles() if p.get('kind')=='existing' and p.get('native_home')==spec['home'] and p.get('native_config_dir')==spec['config_dir']),None)
-                profile=self.profiles.register_existing(spec);seen.add(profile['id'])
-                if profile.get('token_present') and profile.get('available') and (not previous or not previous.get('token_present')):
-                    self.request_detection(profile['id'])
-            for profile in self.profiles.list_profiles():
-                if profile.get('kind')=='existing' and profile['id'] not in seen:
-                    original=self.profiles.get_profile(profile['id']);original['available']=False;self.profiles._save()
+            self.profiles.native_runtime.refresh_installations(found['configurations'])
+            if import_logins:
+                imported=await asyncio.to_thread(self.profiles.import_installed_accounts_once,self.cfg.get('machine_name'))
+                if not self.active and imported:
+                    self.active=imported[0];self.persist()
+                for identifier in imported:
+                    if identifier!=self.cfg.get('default_profile_id'):self.request_detection(identifier)
             # Recover only the instance matching the active profile's exact HOME/config.
             # Desktop-launched native profiles are visible even before the project starts them.
             running=bool(self.supervisor.process and self.supervisor.process.poll() is None)
             if not running and not self.starting_profile_id and not self.busy:
                 candidates=[]
                 if self.profiles.get_profile(self.active):candidates.append(self.profiles.get_profile(self.active))
-                candidates += [p for p in self.profiles.list_profiles() if p.get('kind')=='existing' and p.get('available') and p['id']!=self.active]
+                common=self.profiles.native_runtime.binding
+                if common and common['profile_id']!=self.active:
+                    candidate=self.profiles.get_profile(common['profile_id'])
+                    if candidate and not candidate.get('internal_runtime'):candidates.append(candidate)
                 for p in candidates:
                     self.bind_engine_home(p['id'])
                     adopted=await asyncio.to_thread(self.supervisor.adopt_existing)
@@ -77,10 +78,6 @@ class SuiteState:
                         self.active=p['id'];self.loaded=p['id'];self.persist()
                         break
                 if self.profiles.get_profile(self.active):self.bind_engine_home(self.active)
-            for p in self.profiles.list_profiles():
-                if p.get('kind')=='existing':self.profiles.refresh_existing_metadata(p['id'])
-            if self.cfg.get('shared_native_runtime',True):
-                self.profiles.native_runtime.select(self.profiles.list_profiles())
     def prune_imports(self):
         now=time.time()
         for token,item in list(self.pending_imports.items()):
@@ -626,7 +623,7 @@ async def resources(app):
                                  auto_decompress=False,cookie_jar=aiohttp.DummyCookieJar(),trust_env=False)
     boot=None
     if s.discovery_enabled:
-        await s.refresh_existing()
+        await s.refresh_existing(import_logins=True)
         s.discovery_running=True
         async def scan_existing():
             while s.discovery_running:

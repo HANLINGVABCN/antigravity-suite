@@ -37,7 +37,6 @@ main { display:grid; grid-template-columns:minmax(0,1.2fr) minmax(0,1fr); align-
 .empty-list { padding:30px 12px; text-align:center; color:var(--text-sub); font-size:13px; line-height:1.7; }
 .card-item { min-width:0; padding:16px; border:1px solid var(--border); border-radius:10px; background:#10192c; }
 .active-item { border-color:#38bdf8; background:#10253a; }
-.existing-item { border-left:3px solid #b6a0ff; }
 .card-head { display:flex; flex-wrap:wrap; justify-content:space-between; gap:10px; margin-bottom:12px; }
 .card-head > div { min-width:0; overflow-wrap:anywhere; }
 .card-title { display:flex; flex-wrap:wrap; gap:8px; align-items:center; font-size:15px; font-weight:600; }

@@ -9,6 +9,8 @@ import time
 import uuid
 import hashlib
 import base64
+import sqlite3
+import socket
 from pathlib import Path, PurePosixPath
 from config import atomic_json
 from shared_history import SharedHistory
@@ -111,7 +113,122 @@ class ProfileManager:
         if not path.resolve().is_relative_to(home.resolve()):raise ValueError('共享聊天记录不能通过档案文件编辑器覆盖')
         return path
     def _save(self): atomic_json(self.meta_file, self.profiles)
-    def list_profiles(self): return copy.deepcopy(self.profiles)
+    def list_profiles(self): return copy.deepcopy([p for p in self.profiles if not p.get('internal_runtime')])
+
+    @staticmethod
+    def installed_token(file):
+        try:
+            file=Path(file)
+            if not file.is_file() or file.stat().st_size>1024*1024:return None
+            value=json.loads(file.read_text(encoding='utf-8'))
+            refresh=value.get('token',{}).get('refresh_token')
+            if not isinstance(refresh,str) or not refresh:return None
+            email=value.get('id_token_email','')
+            if not email and isinstance(value.get('id_token'),str):
+                try:
+                    part=value['id_token'].split('.')[1]
+                    email=json.loads(base64.urlsafe_b64decode(part+'='*(-len(part)%4))).get('email','')
+                except (ValueError,IndexError,TypeError):pass
+            return dict(fingerprint=hashlib.sha256(refresh.encode()).hexdigest(),email=email if isinstance(email,str) and len(email)<=320 else '')
+        except (OSError,ValueError,TypeError,AttributeError):return None
+
+    def capture_installed_account(self, profile, native):
+        from native_runtime import targets
+        folder=self.profile_dir(profile['id'])
+        stage=Path(tempfile.mkdtemp(prefix='.installed-account-',dir=folder))
+        backup=None
+        try:
+            for name,source in targets(native['native_home'],native['native_config_dir']).items():
+                target=stage/name
+                if source.is_dir():
+                    safe_copytree(source,target)
+                    # Capture committed SQLite/WAL state if the desktop app is still running.
+                    for file in target.rglob('*'):
+                        if not file.is_file():continue
+                        with file.open('rb') as stream:header=stream.read(16)
+                        if header!=b'SQLite format 3\0':continue
+                        original=source/file.relative_to(target)
+                        fd,snapshot=tempfile.mkstemp(prefix='.sqlite-import-',dir=self.data_dir)
+                        os.close(fd);saved=Path(snapshot)
+                        incoming=outgoing=None
+                        try:
+                            incoming=sqlite3.connect('file:'+original.as_posix()+'?mode=ro',uri=True,timeout=3)
+                            outgoing=sqlite3.connect(saved)
+                            incoming.backup(outgoing)
+                            incoming.close();outgoing.close()
+                            os.replace(saved,file)
+                        finally:
+                            if incoming:incoming.close()
+                            if outgoing:outgoing.close()
+                            saved.unlink(missing_ok=True)
+                        for suffix in ('-wal','-shm','-journal'):
+                            (file.parent/(file.name+suffix)).unlink(missing_ok=True)
+                elif source.is_file():shutil.copy2(source,target)
+            old=folder/'store'
+            if old.exists():
+                backup=self.data_dir/'installed-account-backups'/str(time.time_ns())/profile['id']
+                backup.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+                os.replace(old,backup)
+            os.replace(stage,old)
+            self.history.merge_native(Path(native['native_home'])/'.gemini/antigravity')
+        except Exception:
+            if backup and backup.exists():
+                remove_path(folder/'store');os.replace(backup,folder/'store')
+            raise
+        finally:
+            if stage.exists():shutil.rmtree(stage)
+
+    def import_installed_accounts_once(self, machine_name=None):
+        marker=self.data_dir/'installed-account-import.json'
+        if marker.is_file():return []
+        machine_name=''.join(c for c in str(machine_name or socket.gethostname()).strip() if ord(c)>=32 and ord(c)!=127)[:128]
+        default_name='默认配置-'+(machine_name or socket.gethostname())
+        original=copy.deepcopy(self.profiles);imported=[]
+        original_binding=copy.deepcopy(self.native_runtime.binding)
+        atomic_json(self.data_dir/'installed-account-profile-backup.json',original)
+        try:
+            for native in self.native_runtime.installations:
+                token=self.installed_token(Path(native['native_home'])/'.gemini/jetski-standalone-oauth-token')
+                if not token:continue
+                candidates=[p for p in self.profiles if p.get('kind')!='existing' and not p.get('internal_runtime')]
+                binding=self.native_runtime.binding
+                candidates.sort(key=lambda p: p['id']!=(binding or {}).get('profile_id'))
+                match=None
+                if not match:
+                    for candidate in candidates:
+                        files=[self.profile_dir(candidate['id'])/'store/jetski-standalone-oauth-token',
+                               self.profile_dir(candidate['id'])/'home/.gemini/jetski-standalone-oauth-token']
+                        found=[self.installed_token(file) for file in files]
+                        if any(item and item['fingerprint']==token['fingerprint'] for item in found):match=candidate;break
+                if not match and token['email']:
+                    match=next((p for p in candidates if p.get('email','').lower()==token['email'].lower()),None)
+                if not match:
+                    legacy=next((p for p in self.profiles if p.get('kind')=='existing' and p['id']==native['id']),None)
+                    if legacy:
+                        match=legacy
+                        for key in list(match):
+                            if key=='kind' or key.startswith('native_') or key in ('available','token_present','internal_runtime'):match.pop(key)
+                        if match['name'].startswith('已有共享配置'):
+                            match['name']=default_name
+                        match['email']=token['email'] or match.get('email','未登录')
+                    else:match=self.create_profile(default_name,email=token['email'])
+                    self.capture_installed_account(match,native)
+                imported.append(match['id'])
+                if binding is None and len(self.native_runtime.installations)==1:
+                    self.native_runtime.binding=dict(profile_id=match['id'],native=dict(native))
+                    atomic_json(self.native_runtime.file,self.native_runtime.binding)
+            # Preserve legacy IDs and files privately; do not turn a runtime directory into a second account.
+            for profile in self.profiles:
+                if profile.get('kind')=='existing':profile['internal_runtime']=True
+            self._save()
+            atomic_json(marker,dict(completed=True,imported_profile_ids=imported,machine_name=machine_name,imported_at=time.time()))
+            return imported
+        except Exception:
+            self.profiles=original;self._save()
+            self.native_runtime.binding=original_binding
+            if original_binding:atomic_json(self.native_runtime.file,original_binding)
+            else:self.native_runtime.file.unlink(missing_ok=True)
+            raise
     def get_profile(self, p_id): return next((p for p in self.profiles if p['id']==p_id), None)
     def profile_dir(self, p_id):
         if not isinstance(p_id,str) or not re.fullmatch(r'[a-f0-9]{8,32}',p_id) or not self.get_profile(p_id):
@@ -152,6 +269,9 @@ class ProfileManager:
         remove_path(self.profile_dir(p_id))
         self.profiles=[p for p in self.profiles if p['id']!=p_id]
         self._save()
+        if self.native_runtime.binding and self.native_runtime.binding['profile_id']==p_id:
+            self.native_runtime.binding=None
+            self.native_runtime.file.unlink(missing_ok=True)
     def save_active_to_profile(self,p_id):
         profile=self.get_profile(p_id)
         if profile and profile.get('kind')=='existing':

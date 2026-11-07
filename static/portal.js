@@ -162,27 +162,24 @@ let currentStatus = null;
             // Profiles
             const pCont = document.getElementById("profile-container");
             const profileCards = [];
-            const profiles = currentStatus.profiles || [];
+            const profiles = (currentStatus.profiles || []).filter(p => !p.internal_runtime && p.kind !== 'existing');
             if (profiles.length === 0) {
                 // The stable list renderer shows the empty state.
             } else {
                 profiles.forEach(p => {
-                    const runtimeAlias = currentStatus.common_runtime?.existing_profile_id === p.id;
-                    const runtimeId = runtimeAlias ? currentStatus.common_runtime.profile_id : p.id;
-                    const isCur = currentStatus.active_profile?.id === runtimeId;
-                    const isStarting = currentStatus.starting_profile_id === runtimeId || localStartingId === runtimeId;
+                    const isCur = currentStatus.active_profile?.id === p.id;
+                    const isStarting = currentStatus.starting_profile_id === p.id || localStartingId === p.id;
                     const ready = isCur && currentStatus.antigravity_ready && !isStarting;
                     const detecting = currentStatus.diagnostics?.[p.id]?.status === 'checking';
                     const isDef = currentStatus.default_profile_id === p.id;
-                    const boundProxy = (currentStatus.proxies || []).find(px => px.id === (runtimeAlias ? currentStatus.active_profile?.proxy_id : p.proxy_id));
+                    const boundProxy = (currentStatus.proxies || []).find(px => px.id === p.proxy_id);
 
                     const div = document.createElement("div");
-                    div.className = "card-item" + (isCur ? " active-item" : "") + (p.kind === 'existing' ? ' existing-item' : '');
+                    div.className = "card-item" + (isCur ? " active-item" : "");
                     div.innerHTML = `
                         <div class="card-head">
                             <div class="card-title">
                                 ${escapeHtml(p.name)}
-                                ${p.kind === 'existing' ? '<span class="tag-default">已有共用运行配置</span>' : ''}
                                 ${isCur && currentStatus.antigravity_ready ? '<span class="pill pill-active" style="padding:2px 8px; font-size:10px;">当前运行</span>' : ''}
                                 ${isDef ? '<span class="tag-default">开机默认</span>' : ''}
                             </div>
@@ -191,7 +188,6 @@ let currentStatus = null;
                             </div>
                         </div>
                         <div class="card-meta">
-                            ${p.kind === 'existing' ? `<span>配置位置：${escapeHtml(p.native_config_dir)}</span><span>${runtimeAlias ? '桌面与网页共用当前账号：' + escapeHtml(currentStatus.active_profile?.name || runtimeId) : p.available ? '可接管现有本体，直接共用原配置' : '当前不可接管，请检查本体和权限'}</span>` : ''}
                             <span>🛡️ 绑定网络: <b>${boundProxy ? escapeHtml(boundProxy.name) : '本机直连'}</b></span>
                             <span>🕒 上次活跃: ${escapeHtml(p.last_used_at || p.created_at)}</span>
                         </div>
@@ -202,7 +198,7 @@ let currentStatus = null;
                             <button class="btn btn-secondary" onclick="openEditModal('${p.id}')">📝 详情与编辑</button>
                             <button class="btn btn-secondary" onclick="toggleDefault('${p.id}')">${isDef ? '取消默认' : '⭐️ 设为开机默认'}</button>
                             <button class="btn btn-secondary" onclick="exportProfile('${p.id}')">📤 导出</button>
-                            ${p.kind === 'existing' ? '<span style="font-size:12px;color:#93c5fd;">原配置保留</span>' : `<button class="btn btn-danger" onclick="deleteProfile('${p.id}')">🗑️ 删除</button>`}
+                            <button class="btn btn-danger" onclick="deleteProfile('${p.id}')">🗑️ 删除</button>
                         </div>
                     `;
                     profileCards.push({id:p.id, className:div.className, html:div.innerHTML});
@@ -454,7 +450,6 @@ let currentStatus = null;
         }
 
         async function profileAction(id) {
-            if (id === currentStatus.common_runtime?.existing_profile_id) id = currentStatus.common_runtime.profile_id;
             if (currentStatus.active_profile?.id === id && currentStatus.antigravity_ready && !currentStatus.starting_profile_id) {
                 window.location.href = "/";
                 return;
