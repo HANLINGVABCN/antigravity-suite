@@ -19,7 +19,7 @@ from test_suite import start,login,config,FakeSupervisor
 from server import create_app
 
 FIXTURE='''globalThis.AuthFixture=class {
-async loginWithRedirect(a){let g=await this._lsClient.login({});var e=g.authResult;this.result=e;}
+async loginWithRedirect(a){let g=await this._lsClient.login({});var e=g.authResult;if(e?.hasValidAuth)this.result=e;}
 async logout(){this.isLoggingOut=true;await this._lsClient.authLogout({});this.result=null;}
 };'''
 
@@ -136,11 +136,12 @@ def test_guard_preserves_asar_and_inline_sandbox_preload_updates_idempotently(tm
     if os.name!='nt':assert archive.stat().st_mode&0o777==0o644
 
 
-def test_client_transform_parity_and_logout_never_changes_auth_or_calls_rpc(tmp_path):
-    source,supported=transform_client(FIXTURE)
+@pytest.mark.parametrize('fixture',[FIXTURE,FIXTURE.replace('var e=g.authResult;if(e?.hasValidAuth)this.result=e;','var d=g.authResult;if(d?.hasValidAuth)this.result=d;')])
+def test_client_transform_parity_and_logout_never_changes_auth_or_calls_rpc(tmp_path,fixture):
+    source,supported=transform_client(fixture)
     assert supported
     script=Path(__file__).resolve().parents[1]/'static/client-transform.js'
-    node='const t=require('+json.dumps(str(script))+');process.stdout.write(JSON.stringify(t.transform('+json.dumps(FIXTURE)+')));'
+    node='const t=require('+json.dumps(str(script))+');process.stdout.write(JSON.stringify(t.transform('+json.dumps(fixture)+')));'
     native=json.loads(subprocess.check_output(['node','-e',node],text=True))
     assert native==dict(source=source,supported=True)
     execution='''let warnings=0,rpcs=0,begins=0,completions=0;

@@ -21,10 +21,13 @@ function transform(source, bootstrap = '', dock = '') {
     if (!source.slice(a,aEnd).includes('.authLogout({})') || !source.slice(a,aEnd).includes('isLoggingOut')) return {source,supported:false};
     const b = source.indexOf(login), bEnd = endOfMethod(source,b);
     let method = source.slice(b,bEnd);
-    if (!method.includes('.login({') || method.split('var e=g.authResult;').length !== 2) return {source,supported:false};
+    const results=[...method.matchAll(/var ([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\.authResult;/g)];
+    if (!method.includes('.login({') || results.length!==1) return {source,supported:false};
+    const result=results[0];
+    if(!method.includes(result[1]+'?.hasValidAuth'))return {source,supported:false};
     const opening = method.indexOf('{');
     method = method.slice(0,opening+1)+'let __agyLoginEvent=await globalThis.__AGY_SESSION__.begin();let __agyLoginFinished=false;try{'+method.slice(opening+1);
-    method = method.replace('var e=g.authResult;','var e=g.authResult;__agyLoginFinished=true;await globalThis.__AGY_SESSION__.complete(__agyLoginEvent,!!e?.hasValidAuth);');
+    method = method.replace(result[0],result[0]+'__agyLoginFinished=true;await globalThis.__AGY_SESSION__.complete(__agyLoginEvent,!!'+result[1]+'?.hasValidAuth);');
     method=method.slice(0,-1)+'}finally{if(!__agyLoginFinished)await globalThis.__AGY_SESSION__.complete(__agyLoginEvent,false);}}';
     const replacements = [[b,bEnd,method],[a,a+logout.length,logout+'await globalThis.__AGY_SESSION__.warn();return;']].sort((x,y)=>y[0]-x[0]);
     for (const [start,end,value] of replacements) source=source.slice(0,start)+value+source.slice(end);

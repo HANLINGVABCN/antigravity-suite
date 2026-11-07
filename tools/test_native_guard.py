@@ -22,7 +22,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from desktop_guard import install,read_archive,encode_archive
 
 FIXTURE='''globalThis.AuthFixture=class {
-async loginWithRedirect(a){let g=await this._lsClient.login({});var e=g.authResult;this.result=e;}
+async loginWithRedirect(a){let g=await this._lsClient.login({});var e=g.authResult;if(e?.hasValidAuth)this.result=e;}
 async logout(){this.isLoggingOut=true;await this._lsClient.authLogout({});this.result=null;}
 };globalThis.testAuth=new AuthFixture();testAuth.isLoggingOut=false;testAuth.result='kept';
 testAuth._lsClient={authLogout:async()=>fetch('/exa.language_server_pb.LanguageServerService/AuthLogout',{method:'POST'}),login:async()=>({authResult:{hasValidAuth:true}})};'''

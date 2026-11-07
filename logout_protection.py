@@ -36,10 +36,13 @@ def transform_client(source, bootstrap='', dock=''):
     if '.authLogout({})' not in source[logout_start:logout_end] or 'isLoggingOut' not in source[logout_start:logout_end]:return source,False
     login_start=source.index(LOGIN_ANCHOR);login_end=method_end(source,login_start)
     login=source[login_start:login_end]
-    if '.login({' not in login or login.count('var e=g.authResult;')!=1:return source,False
+    results=list(re.finditer(r'var ([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\.authResult;',login))
+    if '.login({' not in login or len(results)!=1:return source,False
+    result=results[0]
+    if not re.search(r'\b'+re.escape(result.group(1))+r'\?\.hasValidAuth\b',login):return source,False
     opening=login.index('{')
     login=login[:opening+1]+'let __agyLoginEvent=await globalThis.__AGY_SESSION__.begin();let __agyLoginFinished=false;try{'+login[opening+1:]
-    login=login.replace('var e=g.authResult;','var e=g.authResult;__agyLoginFinished=true;await globalThis.__AGY_SESSION__.complete(__agyLoginEvent,!!e?.hasValidAuth);',1)
+    login=login.replace(result.group(0),result.group(0)+'__agyLoginFinished=true;await globalThis.__AGY_SESSION__.complete(__agyLoginEvent,!!'+result.group(1)+'?.hasValidAuth);',1)
     login=login[:-1]+'}finally{if(!__agyLoginFinished)await globalThis.__AGY_SESSION__.complete(__agyLoginEvent,false);}}'
     replacements=[(login_start,login_end,login),(logout_start,logout_start+len(LOGOUT_ANCHOR),LOGOUT_ANCHOR+'await globalThis.__AGY_SESSION__.warn();return;')]
     for start,end,text in sorted(replacements,reverse=True):source=source[:start]+text+source[end:]
