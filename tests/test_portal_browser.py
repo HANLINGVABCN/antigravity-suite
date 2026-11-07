@@ -3,6 +3,8 @@ import asyncio
 import json
 import os
 import queue
+import secrets
+import socket
 import threading
 from pathlib import Path
 
@@ -35,6 +37,12 @@ def portal(tmp_path, chromium):
         return await handler(request)
     app.middlewares.insert(0, delayed_node_details)
     state = app['state']
+    state.updater.controller=dict(kind='test')
+    async def fake_update_check():
+        state.updater.release=dict(tag_name='v99.0.0',html_url='https://github.com/HANLINGVABCN/antigravity-suite/releases/tag/v99.0.0',body='测试更新说明')
+        state.updater.checked_at=1
+        return state.updater.status()
+    state.updater.check=fake_update_check
     node = state.proxies.add_proxy('节点旧名称 #1', 'socks5h', '2001:db8::1', 1080, 'a@b', 'dummy-password:@ /')
     profile = state.profiles.create_profile('测试账号 · ' + '较长名称和备注' * 5, node['id'])
     state.profiles.update_profile(profile['id'], email='dummy-account@example.invalid')
@@ -46,7 +54,18 @@ def portal(tmp_path, chromium):
     stop = threading.Event()
 
     async def serve():
-        runner, port = await start(app)
+        # Browser-reserved ports can be returned by a customized ephemeral range.
+        sock=None
+        for _ in range(100):
+            candidate=socket.socket()
+            try:
+                candidate.bind(('127.0.0.1',20000+secrets.randbelow(30000)))
+                sock=candidate;break
+            except OSError:candidate.close()
+        if sock is None:raise RuntimeError('Could not allocate a browser-safe local test port')
+        runner=web.AppRunner(app);await runner.setup()
+        site=web.SockSite(runner,sock);await site.start()
+        port=sock.getsockname()[1]
         ready.put(port)
         try:
             while not stop.is_set():
@@ -64,7 +83,7 @@ def portal(tmp_path, chromium):
     page.goto(url+'/?portal=1')
     pw.expect(page.locator('#profile-container [data-card-id]')).to_have_count(1)
     pw.expect(page.locator('#btn-core-manage')).to_have_text('卸载反重力')
-    yield dict(page=page, context=context, url=url, node=node, profile=profile, settings=settings, archive=archive)
+    yield dict(page=page, context=context, url=url, node=node, profile=profile, settings=settings, archive=archive,state=state)
     context.close()
     stop.set()
     thread.join(timeout=10)
@@ -233,3 +252,22 @@ def test_long_authenticator_setup_keeps_footer_reachable_without_changing_creden
     page.locator('#modal-service-settings .dialog-close').click()
     status=page.request.get(portal['url']+'/__suite/api/system/security/status').json()
     assert status['enabled'] is False
+
+
+def test_update_dialog_on_short_mobile_window_checks_version_and_shows_failure(portal):
+    page=portal['page'];state=portal['state']
+    page.set_viewport_size(dict(width=390,height=400))
+    page.get_by_role('button',name='更新项目',exact=True).click()
+    pw.expect(page.locator('#update-latest-version')).to_have_text('v99.0.0')
+    dialog=assert_dialog_reachable(page,'modal-suite-update')
+    pw.expect(page.locator('#suite-start-update')).to_be_enabled()
+    async def fake_start():
+        atomic_json(state.updater.status_file,dict(job_id='browser-test-job',phase='error',message='可能是下载校验失败；原服务未被修改'))
+        return state.updater.status()
+    state.updater.start=fake_start
+    page.locator('#suite-start-update').click()
+    pw.expect(page.locator('#suite-update-status')).to_contain_text('可能是下载校验失败')
+    pw.expect(page.locator('#suite-update-status')).to_have_class('diag abnormal')
+    assert page.locator('#modal-suite-update:visible').count()==1
+    dialog.locator('.dialog-close').click()
+    pw.expect(page.locator('#btn-suite-update')).to_be_visible()

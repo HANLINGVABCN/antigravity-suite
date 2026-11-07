@@ -41,6 +41,8 @@ class SuiteState:
         self.discovery_enabled=cfg.get('discover_existing',supervisor is None)
         self.discovered=dict(binary=None,installations=[],configurations=[])
         self.discovery_task=None;self.discovery_running=False
+        from suite_updater import SuiteUpdater
+        self.updater=SuiteUpdater(self)
     async def refresh_existing(self):
         if not self.discovery_enabled:return
         from discovery import discover
@@ -77,6 +79,8 @@ class SuiteState:
                 if self.profiles.get_profile(self.active):self.bind_engine_home(self.active)
             for p in self.profiles.list_profiles():
                 if p.get('kind')=='existing':self.profiles.refresh_existing_metadata(p['id'])
+            if self.cfg.get('shared_native_runtime',True):
+                self.profiles.native_runtime.select(self.profiles.list_profiles())
     def prune_imports(self):
         now=time.time()
         for token,item in list(self.pending_imports.items()):
@@ -94,7 +98,8 @@ class SuiteState:
     def bind_engine_home(self, p_id):
         self.profiles.bind_home(p_id)
         p=self.profiles.get_profile(p_id)
-        if p.get('kind')=='existing' and hasattr(self.supervisor,'configure_native'):self.supervisor.configure_native(p)
+        native=self.profiles.native_runtime.spec_for(p_id)
+        if native and hasattr(self.supervisor,'configure_native'):self.supervisor.configure_native(native)
         elif hasattr(self.supervisor,'set_home'):
             self.supervisor.set_home(self.profiles.home);self.supervisor.display=self.cfg['display_num']
     def persist(self):
@@ -106,6 +111,7 @@ class SuiteState:
         if not item: raise ValueError('绑定的代理不存在，请重新选择')
         return self.proxies.get_proxy_url(item)
     def request_start(self, target, restart=False):
+        target=self.profiles.native_runtime.resolve(target)
         if not self.profiles.get_profile(target): raise ValueError('档案不存在')
         if target==self.active and self.supervisor.active_port and not self.busy and not restart: return
         if self.launch_task and not self.launch_task.done():
@@ -124,6 +130,7 @@ class SuiteState:
             finally: self.starting_profile_id=None
         self.launch_task=asyncio.create_task(launch())
     def request_detection(self, target):
+        target=self.profiles.native_runtime.resolve(target)
         if not self.profiles.get_profile(target): raise ValueError('档案不存在')
         task=self.detection_tasks.get(target)
         if task and not task.done(): return
@@ -160,6 +167,13 @@ class SuiteState:
                     await asyncio.to_thread(self.supervisor.stop_antigravity)
                 # Stop any exact-matching orphan before changing runtime or proxy parameters.
                 await asyncio.to_thread(self.supervisor.stop_antigravity)
+                if self.cfg.get('shared_native_runtime',True):
+                    native=self.profiles.native_runtime.selected
+                    if native and not self.profiles.native_runtime.spec_for(target):
+                        original=ProcessSupervisor(self.cfg['antigravity_bin'],native['native_display'],runtime_home=native['native_home'])
+                        original.configure_native(native)
+                        await asyncio.to_thread(original.stop_antigravity)
+                    await asyncio.to_thread(self.profiles.native_runtime.activate,target)
                 await asyncio.to_thread(self.profiles.restore_profile,target)
                 self.bind_engine_home(target)
                 switched=True
@@ -173,6 +187,8 @@ class SuiteState:
                 if old_profile:
                     try:
                         if switched:
+                            if self.cfg.get('shared_native_runtime',True):
+                                await asyncio.to_thread(self.profiles.native_runtime.activate,old)
                             await asyncio.to_thread(self.profiles.restore_profile,old)
                             self.bind_engine_home(old)
                         if old_running:
@@ -202,6 +218,7 @@ class SuiteState:
                     starting_profile_id=self.starting_profile_id,diagnostics=self.diagnostics,
                     privacy=dict(enabled=True,browser_external_connections='blocked',client_ip_headers='removed',profile_homes='separate'),
                     history=self.profiles.history.summary(),
+                    common_runtime=self.profiles.native_runtime.status(),suite_version=(SUITE_DIR/'VERSION').read_text().strip(),
                     profiles=self.profiles.list_profiles(),proxies=[{k:v for k,v in p.items() if k!='password'} for p in self.proxies.list_proxies()],system=system_memory())
 
 def system_memory():
@@ -242,6 +259,8 @@ async def guard(request,handler):
     if request.path.startswith('/__suite/api/') and request.method not in ('GET','HEAD','OPTIONS'):
         origin=request.headers.get('Origin')
         if origin and urlsplit(origin).netloc!=request.host: return web.json_response({'ok':False,'error':'请求来源不匹配'},status=403)
+        if s.updater.busy() and request.path not in ('/__suite/api/system/update/check','/__suite/api/system/update/start','/__suite/api/login','/__suite/api/logout'):
+            return web.json_response(dict(ok=False,error='项目正在更新，请等待完成后再修改配置或启动 IDE'),status=409)
     transport=request.transport
     if authenticated and transport:s.protected_connections.add(transport)
     try: response=await handler(request)
@@ -303,6 +322,15 @@ async def api(request):
     if path=='logout' and method=='POST':
         response=ok(); response.del_cookie('ag_session',path='/'); return response
     if path=='status' and method=='GET': return web.json_response(s.status())
+    if path=='system/update/status' and method=='GET': return ok(**s.updater.status())
+    if path=='system/update/check' and method=='POST':
+        if s.updater.busy():return ok(**s.updater.status())
+        return ok(**(await s.updater.check()))
+    if path=='system/update/start' and method=='POST':
+        async with s.lock:
+            await s.ensure_switch_allowed()
+            if s.installer.task and not s.installer.task.done():raise ValueError('反重力本体操作中，请等待完成')
+            return web.json_response(dict(ok=True,**(await s.updater.start())),status=202)
     if path=='profiles':
         if method=='GET': return web.json_response(s.profiles.list_profiles())
         if method=='POST':
@@ -585,6 +613,7 @@ async def page(request):
     if request.path=='/__suite/security.js': return web.FileResponse(s.static/'security.js')
     if request.path=='/__suite/portal-ui.js': return web.FileResponse(s.static/'portal-ui.js')
     if request.path=='/__suite/portal.js': return web.FileResponse(s.static/'portal.js')
+    if request.path=='/__suite/update.js': return web.FileResponse(s.static/'update.js')
     if request.path=='/__suite/portal.css': return web.FileResponse(s.static/'portal.css')
     if request.path=='/__suite/portal' or (request.path=='/' and 'portal' in request.query):
         return web.FileResponse(s.static/'portal.html',headers={'Cache-Control':'no-store'})
@@ -609,7 +638,9 @@ async def resources(app):
     async def autoboot():
         try:
             target=s.cfg.get('default_profile_id')
-            if target and not s.supervisor.active_port:s.request_start(target)
+            common=s.profiles.native_runtime
+            migrate=bool(common.selected and target and (not common.binding or common.binding['profile_id']!=target))
+            if target and (not s.supervisor.active_port or migrate):s.request_start(target,restart=migrate)
         except Exception as e: s.last_error=str(e); logging.error('默认档案启动失败：%s',e)
     if s.cfg.get('default_profile_id'): boot=asyncio.create_task(autoboot())
     yield

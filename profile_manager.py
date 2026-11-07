@@ -8,6 +8,7 @@ import tempfile
 import time
 import uuid
 import hashlib
+import base64
 from pathlib import Path, PurePosixPath
 from config import atomic_json
 from shared_history import SharedHistory
@@ -35,6 +36,8 @@ class ProfileManager:
         self.bound_profile = None
         self.history=SharedHistory(self.data_dir)
         self._set_home(self.home)
+        from native_runtime import NativeRuntime
+        self.native_runtime=NativeRuntime(self)
     def _set_home(self, home):
         self.home = Path(home)
         self.home.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -45,7 +48,8 @@ class ProfileManager:
             (self.home / '.config/antigravity', 'antigravity_credentials')]
     def home_for(self, p_id):
         profile=self.get_profile(p_id)
-        if profile and profile.get('kind')=='existing':return Path(profile['native_home'])
+        spec=self.native_runtime.spec_for(p_id)
+        if spec:return Path(spec['native_home'])
         return self.profile_dir(p_id) / 'home'
     def bind_home(self, p_id):
         home = self.home_for(p_id)
@@ -53,9 +57,10 @@ class ProfileManager:
         self._set_home(home)
         self.bound_profile = p_id
         profile=self.get_profile(p_id)
-        if profile.get('kind')=='existing':
+        spec=self.native_runtime.spec_for(p_id)
+        if spec:
             self.runtime_targets=[(home/'.gemini/jetski-standalone-oauth-token','jetski-standalone-oauth-token'),
-                (Path(profile['native_config_dir']),'Antigravity_config'),(home/'.gemini/antigravity','gemini_antigravity'),
+                (Path(spec['native_config_dir']),'Antigravity_config'),(home/'.gemini/antigravity','gemini_antigravity'),
                 (home/'.config/antigravity','antigravity_credentials')]
     def register_existing(self,spec):
         key=str(Path(spec['home']).resolve())+'\0'+str(Path(spec['config_dir']).resolve())
@@ -86,6 +91,12 @@ class ProfileManager:
                 if isinstance(value,dict):
                     present=bool(value.get('token',{}).get('refresh_token'))
                     candidate=value.get('id_token_email')
+                    if not candidate and isinstance(value.get('id_token'),str):
+                        try:
+                            encoded=value['id_token'].split('.')[1]
+                            payload=json.loads(base64.urlsafe_b64decode(encoded+'='*(-len(encoded)%4)))
+                            candidate=payload.get('email')
+                        except (ValueError,IndexError,TypeError):pass
                     email=candidate if isinstance(candidate,str) and len(candidate)<=320 else '未登录'
         except (OSError,ValueError,TypeError,AttributeError):pass
         if item.get('email')!=email or item.get('token_present')!=present:
@@ -164,6 +175,7 @@ class ProfileManager:
             remove_path(old)
             self.get_profile(p_id)['last_used_at']=time.strftime('%Y-%m-%d %H:%M:%S')
             self._save()
+            self.native_runtime.snapshot_to_private(p_id)
             return True
         finally: remove_path(stage)
     def restore_profile(self,p_id):
@@ -171,6 +183,10 @@ class ProfileManager:
         if not store.is_dir(): raise ValueError('档案存储目录不存在')
         self.bind_home(p_id)
         profile=self.get_profile(p_id)
+        spec=self.native_runtime.spec_for(p_id)
+        if spec and profile.get('kind')!='existing':
+            self.history.sync_native(self.home/'.gemini/antigravity',spec['native_uid'])
+            return True
         if profile.get('kind')=='existing':
             if not profile.get('available'):raise ValueError('已有配置当前不可接管，请检查本体和目录权限')
             self.history.sync_native(self.home/'.gemini/antigravity',profile['native_uid'])

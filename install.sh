@@ -98,6 +98,7 @@ User=root
 WorkingDirectory=$INSTALL_DIR
 Environment=ANTIGRAVITY_SUITE_DATA=$DATA_DIR
 Environment=PYTHONUNBUFFERED=1
+Environment=ANTIGRAVITY_SUITE_SERVICE=$SERVICE_NAME.service
 UMask=0077
 ExecStart=$INSTALL_DIR/.venv/bin/python $INSTALL_DIR/server.py
 Restart=on-failure

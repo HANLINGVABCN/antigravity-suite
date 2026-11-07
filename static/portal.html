@@ -17,6 +17,7 @@
             </div>
         </div>
         <div class="header-actions">
+            <button class="btn btn-secondary" id="btn-suite-update" onclick="openSuiteUpdate()">更新项目</button>
             <button class="btn btn-primary" id="btn-core-manage" disabled onclick="openCoreInstallModal()">检测反重力…</button>
             <button class="btn btn-secondary" onclick="openServiceSettings()">服务设置</button><button class="btn btn-secondary" onclick="stopEngine()">停止 IDE</button><button class="btn btn-secondary" onclick="logout()">登出</button>
         </div>
@@ -25,6 +26,7 @@
             <div class="pill" id="pill-core-status">本体状态检测中...</div>
             <div class="pill" id="pill-system-status">内存检测中...</div>
             <div class="pill" id="pill-cur-ip">出口检测中...</div>
+            <div class="pill" id="pill-suite-version">项目版本加载中…</div>
     </div>
     <div class="history-tip">聊天记录由所有配置共享，切换账号不会隐藏其他账号的本地记录。</div><div id="google-auth-notice" role="status" style="margin:12px 24px;padding:12px;border:1px solid var(--border);border-radius:8px;font-size:13px">等待检查 Google 登录状态</div>
 
@@ -329,9 +331,24 @@
         </div>
     </div></div>
     <div id="transfer-status" role="status" style="display:none;position:fixed;bottom:20px;left:20px;z-index:10001;max-width:calc(100vw - 40px);padding:14px 18px;background:#1e293b;color:#f1f5f9;border:1px solid #38bdf8;border-radius:8px;font-size:14px;"></div>
+    <div class="modal-mask" id="modal-suite-update" hidden><div class="modal-box">
+        <div class="modal-title">项目自动更新</div>
+        <div class="form-group"><label>当前版本</label><strong id="update-current-version">读取中…</strong></div>
+        <div class="form-group"><label>最新正式版</label><strong id="update-latest-version">尚未检查</strong></div>
+        <div id="suite-update-status" class="diag" role="status">点击检查更新，从本项目 GitHub 发布页读取版本。</div>
+        <p id="suite-update-support" style="font-size:13px;color:var(--text-sub)"></p>
+        <p style="font-size:13px;color:var(--text-sub)">自动更新管理后台。更新前保存运行状态并备份，保留当前密码、验证器、账号配置、节点及聊天记录。更新期间后台会短暂重启，页面会自动等待并刷新。</p>
+        <details id="suite-update-notes"><summary>新版更新说明</summary><pre id="suite-update-notes-content" style="white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;font-size:13px;line-height:1.7"></pre></details>
+        <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:20px;">
+            <button class="btn btn-secondary" onclick="PortalUI.close('modal-suite-update')">关闭</button>
+            <button class="btn btn-secondary" id="suite-check-update" onclick="checkSuiteUpdate()">检查更新</button>
+            <button class="btn btn-primary" id="suite-start-update" onclick="startSuiteUpdate()" disabled>自动更新</button>
+        </div>
+    </div></div>
     <script src="/__suite/portal-ui.js"></script>
     <script src="/__suite/proxy-editor.js"></script>
     <script src="/__suite/security.js"></script>
     <script src="/__suite/portal.js"></script>
+    <script src="/__suite/update.js"></script>
 </body>
 </html>
