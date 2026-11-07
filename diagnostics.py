@@ -7,12 +7,17 @@ from process_supervisor import ProcessSupervisor
 
 
 async def run_detection(state, p_id):
+    started=time.time()
+    def progress(value):
+        state.diagnostics[p_id]=dict(status='checking',started_at=started,checked_at=None,**value)
+    progress(dict(stage='queue',reason='等待检测；配置已经保存'))
     async with state.lock:
         profile=state.profiles.get_profile(p_id)
         if not profile: return
         proxy=state.proxy_url(profile)
         proxy_result=None
         if proxy:
+            progress(dict(stage='proxy',reason='正在检查代理节点；配置已经保存'))
             proxy_result=await asyncio.to_thread(state.proxies.test_proxy,profile['proxy_id'])
             if not proxy_result.get('ok'):
                 state.diagnostics[p_id]=dict(status='abnormal',severity='error',authorized=False,
@@ -25,6 +30,7 @@ async def run_detection(state, p_id):
         old_binding=state.profiles.bound_profile
         try:
             if p_id!=state.active or not state.supervisor.active_port:
+                progress(dict(stage='starting',reason='正在准备配置并启动检测引擎；配置已经保存'))
                 if not state.supervisor.installed():
                     state.diagnostics[p_id]=dict(status='abnormal',severity='warning',authorized=False,
                         reason='可能是尚未安装可用的反重力本体，暂时不能完成原生账号检测；凭据仍已保存',checked_at=time.time())
@@ -46,7 +52,7 @@ async def run_detection(state, p_id):
                 bridge=await OutboundProxy(proxy).__aenter__()
                 await asyncio.to_thread(temporary.start_antigravity,bridge.url)
                 context=SimpleNamespace(cfg=state.cfg,supervisor=temporary,http=state.http,active=p_id,busy=False)
-            result=await auth_status(context,force=True)
+            result=await auth_status(context,force=True,progress=progress)
             state.diagnostics[p_id]=dict(result,status='normal' if result['authorized'] else 'abnormal',
                 severity='success' if result['authorized'] else 'error',checked_at=time.time(),
                 proxy_ip=proxy_result.get('ip') if proxy_result else None)

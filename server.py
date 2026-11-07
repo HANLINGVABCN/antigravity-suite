@@ -45,6 +45,7 @@ class SuiteState:
         from login_sessions import LoginSessions
         self.sessions=LoginSessions(self.data)
         self.exit_task=None;self.exit_state=dict(phase='idle',message='')
+        self.opening_login=False
         self.login_environment_open=False
         from native_control import NativeControl
         from session_operations import SessionOperations
@@ -215,6 +216,20 @@ class SuiteState:
             except Exception:
                 self.diagnostics[target]=dict(status='abnormal',severity='error',reason='可能是检测进程、网络连接或凭据读取异常，请查看服务日志',checked_at=time.time())
         self.detection_tasks[target]=asyncio.create_task(detect())
+    def request_open_login(self):
+        if self.launch_task and not self.launch_task.done():return
+        if self.exit_task and not self.exit_task.done():raise ValueError('正在退出配置，请稍后重试')
+        if not self.sessions.state.get('waiting'):raise ValueError('请先选择需要启动的配置')
+        self.opening_login=True
+        async def launch():
+            async with self.lock:
+                self.busy=True;self.supervisor.is_restarting=True
+                try:
+                    await self.session_ops.start_empty(self.session_ops.runtime(create=True))
+                    self.cfg['login_environment']=True;self.persist()
+                except Exception as error:self.last_error=str(error)
+                finally:self.busy=False;self.supervisor.is_restarting=False;self.opening_login=False
+        self.launch_task=asyncio.create_task(launch())
     async def activate(self,target):
         p=self.profiles.get_profile(target)
         if not p: raise ValueError('档案不存在')
@@ -328,6 +343,7 @@ class SuiteState:
                     native_session=dict(state='logged_out' if self.cfg.get('native_logged_out') else 'logged_in' if p else 'unknown'),
                     login_sessions=self.sessions.status(),exit_state=self.exit_state,
                     login_environment_ready=self.login_environment_open and bool(port),
+                    opening_login=self.opening_login,
                     logout_protection=self.session_ops.desktop_status,
                     profiles=self.profiles.list_profiles(),proxies=[{k:v for k,v in p.items() if k!='password'} for p in self.proxies.list_proxies()],system=system_memory())
 
@@ -682,6 +698,10 @@ async def api(request):
     if path=='system/restart' and method=='POST':
         s.request_start(s.active,restart=True)
         return web.json_response(dict(ok=True,status='starting'),status=202)
+    if path=='system/start' and method=='POST':
+        if s.cfg.get('native_logged_out') and s.sessions.state.get('waiting'):s.request_open_login()
+        else:s.request_start(s.active or s.cfg.get('default_profile_id'))
+        return web.json_response(dict(ok=True,status='starting'),status=202)
     if path=='system/config':
         if method=='GET': return ok(**{k:s.cfg.get(k) for k in ['listen_host','listen_port','auth_user']})
         if method=='POST':
@@ -768,6 +788,8 @@ async def page(request):
     if request.path=='/__suite/security.js': return web.FileResponse(s.static/'security.js')
     if request.path=='/__suite/portal-ui.js': return web.FileResponse(s.static/'portal-ui.js')
     if request.path=='/__suite/portal.js': return web.FileResponse(s.static/'portal.js')
+    if request.path=='/__suite/transfer-feedback.js': return web.FileResponse(s.static/'transfer-feedback.js')
+    if request.path=='/__suite/core-toggle.js': return web.FileResponse(s.static/'core-toggle.js')
     if request.path=='/__suite/update.js': return web.FileResponse(s.static/'update.js')
     if request.path=='/__suite/logout-guard.js': return web.FileResponse(s.static/'logout-guard.js')
     if request.path=='/__suite/portal.css': return web.FileResponse(s.static/'portal.css')

@@ -19,7 +19,7 @@
         <div class="header-actions">
             <button class="btn btn-secondary" id="btn-suite-update" onclick="openSuiteUpdate()">更新项目</button>
             <button class="btn btn-primary" id="btn-core-manage" disabled onclick="openCoreInstallModal()">检测反重力…</button>
-            <button class="btn btn-secondary" onclick="openServiceSettings()">服务设置</button><button class="btn btn-secondary" id="btn-exit-session" onclick="exitCurrentSession()">退出配置</button><button class="btn btn-secondary" onclick="stopEngine()">停止 IDE</button><button class="btn btn-secondary" onclick="logout()">退出后台</button>
+            <button class="btn btn-secondary" onclick="openServiceSettings()">服务设置</button><button class="btn btn-secondary" id="btn-exit-session" onclick="exitCurrentSession()">退出配置</button><button class="btn btn-secondary" id="btn-engine-toggle" onclick="stopEngine()">启动反重力</button><button class="btn btn-secondary" onclick="logout()">退出后台</button>
         </div>
     </header>
     <div class="overview-strip" aria-label="运行状态">
@@ -348,6 +348,8 @@
     <script src="/__suite/portal-ui.js"></script>
     <script src="/__suite/proxy-editor.js"></script>
     <script src="/__suite/security.js"></script>
+    <script src="/__suite/transfer-feedback.js"></script>
+    <script src="/__suite/core-toggle.js"></script>
     <script src="/__suite/portal.js"></script>
     <script src="/__suite/update.js"></script>
 </body>

@@ -34,6 +34,9 @@ def portal(tmp_path, chromium):
     async def delayed_node_details(request, handler):
         if request.path=='/__suite/api/proxies/detail':
             await asyncio.sleep(.15)
+        if request.path=='/__suite/api/profiles/import/preview':
+            gate=getattr(state,'test_import_gate',None)
+            while gate is not None and not gate.is_set():await asyncio.sleep(.02)
         return await handler(request)
     app.middlewares.insert(0, delayed_node_details)
     state = app['state']
@@ -324,3 +327,50 @@ def test_exit_progress_and_login_entry_are_clear_and_reachable(portal):
     page.locator('#google-auth-notice').get_by_role('button',name='进入登录界面').click(trial=True)
     pw.expect(page.locator('#logout-guard-status')).to_contain_text('桌面退出保护已验证')
     pw.expect(page.locator('#profile-container [data-card-id]')).to_have_count(1)
+
+
+def test_slow_import_keeps_feedback_visible_and_failure_remains_visible(portal):
+    page=portal['page'];state=portal['state'];gate=threading.Event();state.test_import_gate=gate
+    page.clock.install()
+    try:
+        page.get_by_role('button',name='📥 导入',exact=True).click()
+        with page.expect_file_chooser() as chooser:
+            page.get_by_role('button',name='从本工具导入',exact=True).click()
+        chooser.value.set_files(portal['archive'])
+        notice=page.locator('#transfer-status')
+        pw.expect(notice).to_have_attribute('data-phase','working')
+        page.clock.fast_forward(9000)
+        pw.expect(notice).to_be_visible();pw.expect(notice).to_contain_text('秒')
+        gate.set()
+        pw.expect(page.locator('#modal-import-profile')).to_be_visible()
+        pw.expect(notice).to_have_attribute('data-phase','waiting')
+        page.route('**/__suite/api/profiles/import/confirm',lambda route:route.fulfill(status=500,content_type='application/json',body='{"ok":false,"error":"可能是磁盘写入失败"}'))
+        page.locator('#import-profile-button').click()
+        pw.expect(notice).to_have_attribute('data-phase','error')
+        page.clock.fast_forward(30000)
+        pw.expect(notice).to_be_visible();pw.expect(notice).to_contain_text('可能是磁盘写入失败')
+        pw.expect(page.locator('#profile-container [data-card-id]')).to_have_count(1)
+    finally:gate.set()
+
+
+def test_core_button_stops_and_starts_the_same_profile_with_three_states(portal):
+    page=portal['page'];state=portal['state'];identifier=portal['profile']['id']
+    state.active=identifier;state.loaded=identifier;state.supervisor.active_port=45000
+    from test_suite import FakeProcess
+    state.supervisor.process=FakeProcess()
+    page.reload();button=page.locator('#btn-engine-toggle')
+    pw.expect(button).to_have_text('停止反重力')
+    def stop_route(route):
+        state.supervisor.process=None;state.supervisor.active_port=None
+        route.fulfill(status=200,content_type='application/json',body='{"ok":true}')
+    page.route('**/__suite/api/system/stop',stop_route)
+    page.once('dialog',lambda dialog:dialog.accept())
+    button.click();pw.expect(button).to_have_text('启动反重力')
+    def start_route(route):
+        assert route.request.post_data_json['profile_id']==identifier
+        state.starting_profile_id=identifier
+        route.fulfill(status=202,content_type='application/json',body='{"ok":true}')
+    page.route('**/__suite/api/profiles/switch',start_route)
+    button.click();pw.expect(button).to_have_text('启动中…');pw.expect(button).to_be_disabled()
+    state.starting_profile_id=None;state.supervisor.process=FakeProcess();state.supervisor.active_port=45000
+    page.evaluate('fetchStatus()');pw.expect(button).to_have_text('停止反重力')

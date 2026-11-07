@@ -73,6 +73,20 @@ def test_unfinished_login_cannot_overwrite_previous_session_on_service_stop(tmp_
     asyncio.run(scenario())
 
 
+def test_start_after_stopping_login_environment_keeps_waiting_and_does_not_restore_an_account(tmp_path):
+    async def scenario():
+        state,a,home=setup(tmp_path);calls=[]
+        state.active=None;state.cfg['native_logged_out']=True
+        spec=state.profiles.native_runtime.selected;state.sessions.exited(spec)
+        async def empty(runtime):
+            calls.append(runtime['id']);state.login_environment_open=True
+        state.session_ops.start_empty=empty
+        state.request_open_login();await state.launch_task
+        assert calls==[spec['id']] and state.active is None and state.sessions.state['waiting']
+        assert len(state.profiles.list_profiles())==1 and not state.opening_login and not state.busy
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize('probe', [False,None])
 @pytest.mark.skipif(os.name=='nt',reason='Full runtime exit uses Linux shared-history symlinks')
 def test_exit_preserves_saved_session_and_chats_and_rolls_back_unconfirmed_clear(tmp_path,monkeypatch,probe):

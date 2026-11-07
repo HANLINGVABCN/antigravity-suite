@@ -420,16 +420,22 @@ class ProfileManager:
                         self.history.backup_database(snapshot)
                         tar.add(snapshot,arcname='profile/shared-history/conversation_summaries.db')
         return output_path
+    @staticmethod
+    def checked_import_members(tar):
+        total=count=0
+        for member in tar:
+            count+=1;total+=member.size
+            parts=PurePosixPath(member.name).parts
+            if (not parts or member.name.startswith('/') or '..' in parts or '\\' in member.name
+                or ':' in member.name or not (member.isfile() or member.isdir())
+                or count>20000 or total>256*1024*1024):
+                raise ValueError('压缩包包含非法路径、链接或超过大小限制')
+            yield member,parts
+
     def _extract_import(self,tar_path,root):
-        root=Path(root); total=count=0
+        root=Path(root)
         with tarfile.open(tar_path,'r:gz') as tar:
-            for member in tar:
-                count+=1; total+=member.size
-                parts=PurePosixPath(member.name).parts
-                if (not parts or member.name.startswith('/') or '..' in parts or '\\' in member.name
-                    or ':' in member.name or not (member.isfile() or member.isdir())
-                    or count>20000 or total>256*1024*1024):
-                    raise ValueError('压缩包包含非法路径、链接或超过大小限制')
+            for member,parts in self.checked_import_members(tar):
                 dest=root.joinpath(*parts)
                 if member.isdir(): dest.mkdir(parents=True,exist_ok=True)
                 else:
@@ -456,11 +462,30 @@ class ProfileManager:
         return source,meta,proxy
 
     def inspect_import(self,tar_path):
-        with tempfile.TemporaryDirectory(dir=self.profiles_dir,prefix='.inspect-') as tmp:
-            _,meta,proxy=self._extract_import(tar_path,tmp)
-            return dict(name=str(meta.get('name','导入配置')),has_proxy=proxy is not None,
-                        proxy={key:proxy.get(key) for key in ('name','protocol','host','port')} if proxy is not None else None,
-                        proxy_message='包含对应代理' if proxy is not None else '无代理文件')
+        # Preview validates the full archive but only reads small metadata files.
+        # Materializing every application file twice is expensive on small VPS disks.
+        metadata={};proxy_files={};store_roots=set();store_names={}
+        with tarfile.open(tar_path,'r:gz') as tar:
+            for member,parts in self.checked_import_members(tar):
+                if len(parts)>=2 and parts[1]=='store':
+                    store_roots.add(parts[0])
+                    if len(parts)>=3:store_names.setdefault(parts[0],set()).add(parts[2])
+                if len(parts)==2 and parts[1] in ('profile.json','proxy.json'):
+                    if not member.isfile() or member.size>65536:raise ValueError('档案或代理元数据格式无效或过大')
+                    value=json.loads(tar.extractfile(member).read().decode('utf-8'))
+                    if not isinstance(value,dict):raise ValueError('档案或代理元数据格式无效')
+                    (metadata if parts[1]=='profile.json' else proxy_files)[parts[0]]=value
+        if len(metadata)!=1:raise ValueError('需要包含单个 profile.json 和 store 目录的档案包')
+        root,meta=next(iter(metadata.items()))
+        if root not in store_roots:raise ValueError('档案包缺少 store 目录')
+        if store_names.get(root,set())-{name for _,name in self.runtime_targets}:raise ValueError('未知运行目录')
+        proxy=proxy_files.get(root)
+        if proxy is not None:
+            from proxy_manager import ProxyManager
+            ProxyManager.validate_fields(**{key:proxy.get(key,'') for key in ('name','protocol','host','port','username','password')})
+        return dict(name=str(meta.get('name','导入配置')),has_proxy=proxy is not None,
+                    proxy={key:proxy.get(key) for key in ('name','protocol','host','port')} if proxy is not None else None,
+                    proxy_message='包含对应代理' if proxy is not None else '无代理文件')
 
     def import_profile(self,tar_path,proxy_manager=None,include_proxy=False):
         with tempfile.TemporaryDirectory(dir=self.profiles_dir,prefix='.import-') as tmp:

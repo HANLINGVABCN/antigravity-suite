@@ -42,6 +42,16 @@ def test_export_only_includes_selected_bound_proxy(tmp_path):
     assert manager.inspect_import(without)['proxy_message']=='无代理文件'
 
 
+def test_preview_validates_without_extracting_all_profile_files(tmp_path,monkeypatch):
+    package,_,_=make_package(tmp_path)
+    data=tmp_path/'destination';manager=ProfileManager(data,data/'profiles')
+    def cannot_extract(*args):raise AssertionError('Preview must not write all archive files')
+    monkeypatch.setattr(manager,'_extract_import',cannot_extract)
+    result=manager.inspect_import(package)
+    assert result['has_proxy'] and not manager.list_profiles()
+    assert list(manager.profiles_dir.iterdir())==[]
+
+
 def test_optional_import_creates_bound_node_only_when_selected(tmp_path):
     package,node,_=make_package(tmp_path)
     data=tmp_path/'destination';profiles=ProfileManager(data,data/'profiles');nodes=ProxyManager(data)

@@ -9,7 +9,7 @@ let currentStatus = null;
         let selectedExportFormat = 'suite';
         let pendingProfileImport = null;
         let selectedImportSource = 'suite';
-        let transferStatusTimer = null;
+        let importingProfile = false;
 
         let settingsOriginalUser = "";
         async function openServiceSettings() {
@@ -44,9 +44,11 @@ let currentStatus = null;
             if (!result) return '<div class="diag pending">尚未检测</div>';
             const stamp = result.checked_at ? new Date(result.checked_at * 1000).toLocaleString() : '';
             const label = result.status === 'normal' ? '检测正常' : result.status === 'checking' ? '检测中…' : '异常 · 请检查';
-            return `<div class="diag ${result.status}"><strong>${label}</strong><div>${escapeHtml(result.reason)}</div><small>${escapeHtml(stamp)}</small></div>`;
+            const elapsed=result.status==='checking'&&result.started_at?'已用 '+Math.max(0,Math.floor(Date.now()/1000-result.started_at))+' 秒':stamp;
+            return `<div class="diag ${result.status}"><strong>${label}</strong><div>${escapeHtml(result.reason)}</div><small>${escapeHtml(elapsed)}</small></div>`;
         }
         function showSummary() {
+            SuiteCoreToggle.render(currentStatus,coreStatus);
             const notice = document.getElementById("google-auth-notice");
             const protection=currentStatus?.logout_protection;
             const guardStatus=document.getElementById('logout-guard-status');
@@ -99,9 +101,7 @@ let currentStatus = null;
             event.preventDefault(); alert(event.reason?.message || "操作失败");
         });
         async function stopEngine() {
-            if (!confirm("停止当前 IDE 并保存档案？")) return;
-            await fetch("/__suite/api/system/stop", {method:"POST"});
-            await fetchStatus();
+            await SuiteCoreToggle.toggle();
         }
         async function exitCurrentSession() {
             await fetch('/__suite/api/sessions/exit',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
@@ -635,12 +635,7 @@ let currentStatus = null;
             fetchStatus();
         }
 
-        function showTransferStatus(message) {
-            const status = document.getElementById("transfer-status");
-            status.textContent = message; status.style.display = "block";
-            clearTimeout(transferStatusTimer);
-            transferStatusTimer = setTimeout(() => { status.style.display = "none"; }, 7000);
-        }
+        function showTransferStatus(message,options) { SuiteTransfer.show(message,options); }
         function exportProfile(id) {
             const profile = currentStatus.profiles.find(p => p.id === id);
             const proxy = currentStatus.proxies.find(p => p.id === profile.proxy_id);
@@ -711,16 +706,16 @@ let currentStatus = null;
             await previewImportFile(file, selectedImportSource);
         }
         async function previewImportFile(file, source) {
+            if(importingProfile)return;
+            importingProfile=true;SuiteTransfer.begin('正在上传配置包');
             try {
                 if (pendingProfileImport) await cancelProfileImport();
-                const form = new FormData(); form.append("file", file);
-                showTransferStatus("正在检查配置包…");
-                const preview = await (await fetch("/__suite/api/profiles/import/preview?source=" + encodeURIComponent(source), {method:"POST",body:form})).json();
+                const preview = await SuiteTransfer.upload(file,source);
                 pendingProfileImport = preview;
                 document.getElementById("external-import-json").value = "";
                 PortalUI.close("modal-external-import");
                 if (!preview.has_proxy) {
-                    showTransferStatus(source === 'suite' ? "无代理文件" : "正在转换账号，代理由你自己配置");
+                    SuiteTransfer.stage(source === 'suite' ? "无代理文件，正在保存配置" : "正在转换并保存账号，代理由你自己配置");
                     await finishProfileImport(false);
                     return;
                 }
@@ -729,11 +724,13 @@ let currentStatus = null;
                 document.getElementById("import-include-proxy").checked = true;
                 document.getElementById("import-proxy-detail").textContent = (preview.proxy_count > 1 ? '有 ' + preview.proxy_count + ' 个账号附带代理，选择后逐一绑定。示例：' : '') + preview.proxy.name + " · " + preview.proxy.protocol + "://" + preview.proxy.host + ":" + preview.proxy.port;
                 PortalUI.open("modal-import-profile");
-                showTransferStatus("配置包包含对应代理，请选择是否导入");
-            } catch (error) { alert(error.message); }
+                showTransferStatus("配置包包含对应代理，请选择是否导入",{phase:'waiting',persistent:true});
+            } catch (error) { SuiteTransfer.fail(error); }
+            finally {importingProfile=false;}
         }
         async function finishProfileImport(includeProxy) {
             if (!pendingProfileImport) return;
+            SuiteTransfer.stage('正在保存配置和合并聊天记录');
             const result = await (await fetch("/__suite/api/profiles/import/confirm", {method:"POST",headers:{"Content-Type":"application/json"},
                 body:JSON.stringify({import_token:pendingProfileImport.import_token,include_proxy:includeProxy})})).json();
             pendingProfileImport = null;
@@ -742,11 +739,13 @@ let currentStatus = null;
             showTransferStatus(result.proxy_message + "。已导入 " + count + " 个配置" + (result.warnings ? '，已安排自动检测；详细结果见各配置卡片。' : ''));
         }
         async function confirmProfileImport() {
+            if(importingProfile)return;
+            importingProfile=true;
             const button = document.getElementById("import-profile-button");
             button.disabled = true; button.textContent = "导入中…";
             try { await finishProfileImport(document.getElementById("import-include-proxy").checked); }
-            catch (error) { alert(error.message); }
-            finally { button.disabled = false; button.textContent = "导入"; }
+            catch (error) { SuiteTransfer.fail(error); }
+            finally {importingProfile=false; button.disabled = false; button.textContent = "导入"; }
         }
         async function cancelProfileImport() {
             if (pendingProfileImport) {
@@ -754,6 +753,7 @@ let currentStatus = null;
                 pendingProfileImport = null;
             }
             PortalUI.close("modal-import-profile");
+            if(!importingProfile)showTransferStatus('已取消导入');
         }
 
         // OAuth Flow (like CPA)
