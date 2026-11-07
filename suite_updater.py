@@ -38,7 +38,7 @@ def safe_source_name(name):
         raise ValueError('更新包不能包含运行配置、账号凭据或本体')
     if parts[0] not in {'.github','static','docs','examples','tests','tools','systemd'} and len(parts)>1:
         raise ValueError('更新包包含未知源码目录')
-    if PurePosixPath(name).suffix.lower() not in {'.py','.js','.css','.html','.md','.txt','.sh','.ini','.yml','.yaml','.toml','.conf',''}:
+    if PurePosixPath(name).suffix.lower() not in {'.py','.js','.css','.html','.md','.txt','.sh','.ini','.yml','.yaml','.toml','.conf','.service',''}:
         raise ValueError('更新包包含不支持的源码文件')
     return name
 

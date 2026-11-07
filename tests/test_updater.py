@@ -55,6 +55,18 @@ def test_verified_archive_requires_matching_version_and_returns_file_checksums(t
     with pytest.raises(ValueError,match='来源'):release_asset(meta,name)
 
 
+def test_actual_public_source_layout_is_accepted_including_systemd_example(tmp_path):
+    root=Path(__file__).parents[1];archive=tmp_path/'actual-public-source.zip'
+    folders=['static','docs','examples','tests','tools','systemd','.github']
+    files=[p for p in root.iterdir() if p.is_file() and p.suffix not in {'.zip','.gz'}]
+    files+=[p for folder in folders for p in (root/folder).rglob('*') if p.is_file() and '__pycache__' not in p.parts]
+    with zipfile.ZipFile(archive,'w') as package:
+        for file in files:package.write(file,'antigravity-suite/'+file.relative_to(root).as_posix())
+    extracted=extract_release(archive,tmp_path/'source',(root/'VERSION').read_text().strip())
+    assert 'systemd/antigravity-suite-improved.service' in extracted
+    assert 'update_worker.py' in extracted and 'static/update.js' in extracted
+
+
 def update_fixture(tmp_path):
     live=tmp_path/'live';live.mkdir();(live/'VERSION').write_text('0.7.0');(live/'server.py').write_text('# original')
     environment=live/'.venv';environment.mkdir();(environment/'original').write_text('original environment')
