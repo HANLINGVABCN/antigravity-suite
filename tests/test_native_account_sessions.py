@@ -73,10 +73,22 @@ def test_an_existing_b_is_reused_and_does_not_take_as_identity(tmp_path):
 
 
 def test_different_native_login_cannot_be_written_into_as_snapshot_even_before_scan(tmp_path):
-    state,a,home=setup(tmp_path);manager=state.profiles
-    store=manager.profile_dir(a['id'])/'store/jetski-standalone-oauth-token';saved=store.read_bytes()
-    atomic_json(home/'.gemini/jetski-standalone-oauth-token',dict(token=dict(refresh_token='B'),id_token_email='b@example.invalid'))
-    assert manager.save_active_to_profile(a['id']) is False and store.read_bytes()==saved
+    async def scenario():
+        state,a,home=setup(tmp_path);manager=state.profiles
+        store=manager.profile_dir(a['id'])/'store/jetski-standalone-oauth-token';saved=store.read_bytes()
+        atomic_json(home/'.gemini/jetski-standalone-oauth-token',dict(token=dict(refresh_token='B'),id_token_email='b@example.invalid'))
+        assert manager.save_active_to_profile(a['id']) is False and store.read_bytes()==saved
+    asyncio.run(scenario())
+
+
+def test_detached_runtime_cannot_overwrite_a_with_bs_credentials(tmp_path):
+    async def scenario():
+        state,a,home=setup(tmp_path);manager=state.profiles
+        store=manager.profile_dir(a['id'])/'store/jetski-standalone-oauth-token';saved=store.read_bytes()
+        manager.native_runtime.detach()
+        atomic_json(home/'.gemini/jetski-standalone-oauth-token',dict(token=dict(refresh_token='B'),id_token_email='b@example.invalid'))
+        assert manager.save_active_to_profile(a['id']) is False and store.read_bytes()==saved
+    asyncio.run(scenario())
 
 
 def test_login_change_must_be_stable_before_background_association(tmp_path):

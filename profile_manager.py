@@ -297,7 +297,10 @@ class ProfileManager:
             self.native_runtime.file.unlink(missing_ok=True)
     def save_active_to_profile(self,p_id):
         profile=self.get_profile(p_id)
+        if profile and profile.get('kind')!='existing' and self.bound_profile is not None and self.bound_profile!=p_id:return False
         native=self.native_runtime.spec_for(p_id)
+        if not native and profile and profile.get('kind')!='existing':
+            native=next((p for p in self.native_runtime.installations if Path(p['native_home']).resolve()==self.home.resolve()),None)
         if native and profile and profile.get('kind')!='existing':
             current=self.installed_token(Path(native['native_home'])/'.gemini/jetski-standalone-oauth-token')
             if not self.account_matches(p_id,current):return False
