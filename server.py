@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import secrets
 import tempfile
 import time
@@ -34,6 +35,13 @@ class SuiteState:
         self.launch_task=None; self.starting_profile_id=None; self.diagnostics={}; self.detection_tasks={}
         self.outbound_bridge=None; self.engine_proxy_url=None
         self.last_switch=0
+        self.pending_imports={}
+    def prune_imports(self):
+        now=time.time()
+        for token,item in list(self.pending_imports.items()):
+            if item['expires_at']<now:
+                Path(item['path']).unlink(missing_ok=True)
+                self.pending_imports.pop(token,None)
     async def prepare_engine_proxy(self, profile):
         from outbound_proxy import OutboundProxy
         if self.outbound_bridge: await self.outbound_bridge.close()
@@ -193,7 +201,7 @@ async def guard(request,handler):
 async def api(request):
     s=request.app['state']; path=request.match_info['tail']; method=request.method
     d={}
-    if method=='POST' and path!='profiles/import':
+    if method=='POST' and path not in ('profiles/import','profiles/import/preview'):
         if request.can_read_body:
             if request.content_type!='application/json': raise ValueError('请求需要使用 JSON 格式')
             d=await request.json()
@@ -276,7 +284,6 @@ async def api(request):
                 backup=s.data/'file-backups'/('%d-%s'%(time.time_ns(),p_id)); backup.mkdir(parents=True,mode=0o700)
                 (backup/file.name).write_bytes(file.read_bytes())
             fd,name=tempfile.mkstemp(dir=file.parent,prefix='.edit-')
-            import os
             try:
                 with os.fdopen(fd,'w',encoding='utf-8') as out: out.write(content); out.flush(); os.fsync(out.fileno())
                 os.replace(name,file); os.chmod(file,0o600)
@@ -288,29 +295,57 @@ async def api(request):
                 runtime_file.parent.mkdir(parents=True,exist_ok=True)
                 runtime_file.write_text(content,encoding='utf-8');os.chmod(runtime_file,0o600)
         return ok()
+    if path=='profiles/import/preview' and method=='POST':
+        async with s.lock:
+            s.prune_imports()
+            if len(s.pending_imports)>=16:raise ValueError('待导入文件过多，请完成已有导入后重试')
+            temporary=s.data/'.pending-imports';temporary.mkdir(parents=True,exist_ok=True,mode=0o700)
+            fd,name=tempfile.mkstemp(dir=temporary,prefix='profile-',suffix='.tar.gz');os.close(fd)
+            file=Path(name)
+            try:
+                await save_profile_upload(request,file)
+                info=await asyncio.to_thread(s.profiles.inspect_import,file)
+                token=secrets.token_urlsafe(32)
+                s.pending_imports[token]=dict(path=str(file),session=request.cookies.get('ag_session'),expires_at=time.time()+600,has_proxy=info['has_proxy'])
+            except Exception:
+                file.unlink(missing_ok=True);raise
+        return ok(import_token=token,**info)
+    if path=='profiles/import/confirm' and method=='POST':
+        include_proxy=d.get('include_proxy',False)
+        if not isinstance(include_proxy,bool):raise ValueError('是否导入对应代理必须是布尔值')
+        async with s.lock:
+            s.prune_imports()
+            token=d.get('import_token');item=s.pending_imports.get(token)
+            if not item or item['session']!=request.cookies.get('ag_session'):raise ValueError('导入预览已失效，请重新选择文件')
+            p=await asyncio.to_thread(s.profiles.import_profile,Path(item['path']),s.proxies,include_proxy and item['has_proxy'])
+            s.pending_imports.pop(token,None);Path(item['path']).unlink(missing_ok=True)
+        return ok(profile=p,has_proxy=item['has_proxy'],proxy_imported=bool(include_proxy and item['has_proxy']),proxy_message='对应代理已导入' if include_proxy and item['has_proxy'] else '未导入对应代理' if item['has_proxy'] else '无代理文件')
+    if path=='profiles/import/cancel' and method=='POST':
+        async with s.lock:
+            token=d.get('import_token');item=s.pending_imports.get(token)
+            if item and item['session']==request.cookies.get('ag_session'):
+                Path(item['path']).unlink(missing_ok=True);s.pending_imports.pop(token,None)
+        return ok()
     if path=='profiles/import' and method=='POST':
-        reader=await request.multipart(); field=await reader.next()
-        if not field or field.name!='file': raise ValueError('请上传 file 字段')
+        # Backwards compatible direct imports omit proxies unless explicitly requested.
         with tempfile.TemporaryDirectory() as tmp:
-            file=Path(tmp)/'profile.tar.gz'; size=0
-            with file.open('wb') as out:
-                while True:
-                    chunk=await field.read_chunk()
-                    if not chunk: break
-                    size+=len(chunk)
-                    if size>64*1024*1024: raise ValueError('上传包不能超过 64MB')
-                    out.write(chunk)
-            async with s.lock: p=await asyncio.to_thread(s.profiles.import_profile,file)
+            file=Path(tmp)/'profile.tar.gz'
+            await save_profile_upload(request,file)
+            async with s.lock:p=await asyncio.to_thread(s.profiles.import_profile,file,s.proxies,request.query.get('include_proxy')=='1')
         return ok(profile=p)
     if path=='profiles/export' and method=='GET':
         p_id=request.query.get('id'); s.profiles.profile_dir(p_id)
         async with s.lock:
+            include_proxy=request.query.get('include_proxy')=='1'
+            profile=s.profiles.get_profile(p_id)
+            node=s.proxies.get_proxy(profile.get('proxy_id')) if include_proxy and profile.get('proxy_id') else None
+            if include_proxy and not node:raise ValueError('此配置没有可导出的对应代理')
             restart=p_id==s.active and bool(s.supervisor.active_port)
             if p_id==s.active: await s.stop_and_save()
             try:
                 with tempfile.TemporaryDirectory() as tmp:
                     file=Path(tmp)/'profile.tar.gz'
-                    await asyncio.to_thread(s.profiles.export_profile,p_id,file)
+                    await asyncio.to_thread(s.profiles.export_profile,p_id,file,node)
                     data=await asyncio.to_thread(file.read_bytes)
             finally:
                 if restart: await asyncio.to_thread(s.supervisor.start_antigravity,s.engine_proxy_url)
@@ -405,6 +440,21 @@ async def api(request):
         return await google_api(request,s,path,d)
     raise web.HTTPNotFound()
 
+async def save_profile_upload(request,file):
+    if request.content_type!='multipart/form-data':raise ValueError('请上传配置压缩包')
+    reader=await request.multipart();field=await reader.next()
+    if not field or field.name!='file':raise ValueError('请上传 file 字段')
+    size=0
+    with Path(file).open('wb') as output:
+        os.chmod(file,0o600)
+        while True:
+            chunk=await field.read_chunk()
+            if not chunk:break
+            size+=len(chunk)
+            if size>64*1024*1024:raise ValueError('上传包不能超过 64MB')
+            output.write(chunk)
+    if not size:raise ValueError('上传文件为空')
+
 async def page(request):
     s=request.app['state']
     if request.path=='/__suite/floating.js': return web.FileResponse(s.static/'floating.js')
@@ -440,6 +490,8 @@ async def resources(app):
         await asyncio.to_thread(s.supervisor.close)
     await s.http.close()
     if s.outbound_bridge: await s.outbound_bridge.close()
+    for item in s.pending_imports.values():Path(item['path']).unlink(missing_ok=True)
+    s.pending_imports.clear()
 
 async def shutting_down(app):
     s=app['state']

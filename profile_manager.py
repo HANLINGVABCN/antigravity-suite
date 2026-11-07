@@ -154,12 +154,18 @@ class ProfileManager:
         marker.write_text('1',encoding='ascii')
         self.history.attach(self.home)
         return True
-    def export_profile(self,p_id,output_path):
+    def export_profile(self,p_id,output_path,proxy=None):
         folder=self.profile_dir(p_id)
         atomic_json(folder/'profile.json',self.get_profile(p_id))
         with tarfile.open(output_path,'w:gz') as tar:
             tar.add(folder/'store',arcname='profile/store')
             tar.add(folder/'profile.json',arcname='profile/profile.json')
+            if proxy is not None:
+                # A snapshot of only this profile's associated node, never the pool.
+                with tempfile.TemporaryDirectory() as tmp:
+                    node=Path(tmp)/'proxy.json'
+                    atomic_json(node,proxy)
+                    tar.add(node,arcname='profile/proxy.json')
             home=folder/'home'
             if home.is_dir():
                 def filter_member(info):
@@ -177,36 +183,71 @@ class ProfileManager:
                         self.history.backup_database(snapshot)
                         tar.add(snapshot,arcname='profile/shared-history/conversation_summaries.db')
         return output_path
-    def import_profile(self,tar_path):
+    def _extract_import(self,tar_path,root):
+        root=Path(root); total=count=0
+        with tarfile.open(tar_path,'r:gz') as tar:
+            for member in tar:
+                count+=1; total+=member.size
+                parts=PurePosixPath(member.name).parts
+                if (not parts or member.name.startswith('/') or '..' in parts or '\\' in member.name
+                    or ':' in member.name or not (member.isfile() or member.isdir())
+                    or count>20000 or total>256*1024*1024):
+                    raise ValueError('压缩包包含非法路径、链接或超过大小限制')
+                dest=root.joinpath(*parts)
+                if member.isdir(): dest.mkdir(parents=True,exist_ok=True)
+                else:
+                    dest.parent.mkdir(parents=True,exist_ok=True)
+                    with tar.extractfile(member) as src,dest.open('wb') as out: shutil.copyfileobj(src,out)
+                    os.chmod(dest,0o600)
+        metas=list(root.glob('*/profile.json'))
+        if len(metas)!=1: raise ValueError('需要包含单个 profile.json 和 store 目录的档案包')
+        source=metas[0].parent
+        if metas[0].stat().st_size>65536:raise ValueError('档案元数据文件过大')
+        meta=json.loads(metas[0].read_text(encoding='utf-8'))
+        if not isinstance(meta,dict):raise ValueError('档案元数据格式无效')
+        if not (source/'store').is_dir(): raise ValueError('档案包缺少 store 目录')
+        allowed={name for _,name in self.runtime_targets}
+        if any(p.name not in allowed for p in (source/'store').iterdir()): raise ValueError('未知运行目录')
+        proxy=None
+        proxy_file=source/'proxy.json'
+        if proxy_file.exists():
+            if not proxy_file.is_file() or proxy_file.stat().st_size>65536:raise ValueError('代理文件格式无效或过大')
+            proxy=json.loads(proxy_file.read_text(encoding='utf-8'))
+            from proxy_manager import ProxyManager
+            if not isinstance(proxy,dict):raise ValueError('代理文件格式无效')
+            ProxyManager.validate_fields(**{key:proxy.get(key,'') for key in ('name','protocol','host','port','username','password')})
+        return source,meta,proxy
+
+    def inspect_import(self,tar_path):
+        with tempfile.TemporaryDirectory(dir=self.profiles_dir,prefix='.inspect-') as tmp:
+            _,meta,proxy=self._extract_import(tar_path,tmp)
+            return dict(name=str(meta.get('name','导入配置')),has_proxy=proxy is not None,
+                        proxy={key:proxy.get(key) for key in ('name','protocol','host','port')} if proxy is not None else None,
+                        proxy_message='包含对应代理' if proxy is not None else '无代理文件')
+
+    def import_profile(self,tar_path,proxy_manager=None,include_proxy=False):
         with tempfile.TemporaryDirectory(dir=self.profiles_dir,prefix='.import-') as tmp:
-            root=Path(tmp); total=count=0
-            with tarfile.open(tar_path,'r:gz') as tar:
-                for member in tar:
-                    count+=1; total+=member.size
-                    parts=PurePosixPath(member.name).parts
-                    if (not parts or member.name.startswith('/') or '..' in parts or '\\' in member.name
-                        or ':' in member.name or not (member.isfile() or member.isdir())
-                        or count>20000 or total>256*1024*1024):
-                        raise ValueError('压缩包包含非法路径、链接或超过大小限制')
-                    dest=root.joinpath(*parts)
-                    if member.isdir(): dest.mkdir(parents=True,exist_ok=True)
-                    else:
-                        dest.parent.mkdir(parents=True,exist_ok=True)
-                        with tar.extractfile(member) as src,dest.open('wb') as out: shutil.copyfileobj(src,out)
-                        os.chmod(dest,0o600)
-            metas=list(root.glob('*/profile.json'))
-            if len(metas)!=1: raise ValueError('需要包含单个 profile.json 和 store 目录的档案包')
-            source=metas[0].parent
-            meta=json.loads(metas[0].read_text(encoding='utf-8'))
-            if not (source/'store').is_dir(): raise ValueError('档案包缺少 store 目录')
-            allowed={name for _,name in self.runtime_targets}
-            if any(p.name not in allowed for p in (source/'store').iterdir()): raise ValueError('未知运行目录')
-            p=self.create_profile(str(meta.get('name','导入配置'))+' (副本)', '',str(meta.get('email','')))
-            dest=self.profile_dir(p['id'])/'store'; remove_path(dest)
-            shutil.move(str(source/'store'),str(dest))
-            if (source/'home').is_dir(): shutil.move(str(source/'home'),str(self.profile_dir(p['id'])/'home'))
-            if (source/'shared-history').is_dir():self.history.merge_native(source/'shared-history')
-            return p
+            source,meta,proxy=self._extract_import(tar_path,tmp)
+            original_profiles=copy.deepcopy(self.profiles)
+            original_nodes=copy.deepcopy(proxy_manager.proxies) if proxy_manager is not None else None
+            p=None
+            try:
+                proxy_id=''
+                if include_proxy and proxy is not None:
+                    if proxy_manager is None:raise ValueError('代理管理器不可用')
+                    proxy_id=proxy_manager.import_proxy(proxy)['id']
+                p=self.create_profile(str(meta.get('name','导入配置'))+' (副本)',proxy_id,str(meta.get('email','')))
+                dest=self.profile_dir(p['id'])/'store'; remove_path(dest)
+                shutil.move(str(source/'store'),str(dest))
+                if (source/'home').is_dir(): shutil.move(str(source/'home'),str(self.profile_dir(p['id'])/'home'))
+                if (source/'shared-history').is_dir():self.history.merge_native(source/'shared-history')
+                return p
+            except Exception:
+                if p is not None:remove_path(self.profiles_dir/p['id'])
+                self.profiles=original_profiles;self._save()
+                if proxy_manager is not None:
+                    proxy_manager.proxies=original_nodes;proxy_manager._save()
+                raise
     def resolve_file(self,p_id,rel):
         root=(self.profile_dir(p_id)/'store').resolve()
         parts=PurePosixPath(rel).parts

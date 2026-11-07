@@ -139,6 +139,25 @@ class ProxyManager:
             return self.add_proxy(**linked)
         return self.add_proxy(fields.get('name',''),fields.get('protocol','http'),fields.get('host',''),fields.get('port',0),fields.get('username',''),fields.get('password',''))
 
+    def import_proxy(self, value):
+        """Keep an unused portable ID; never overwrite a different existing node."""
+        import re
+        if not isinstance(value,dict):raise ValueError('代理文件格式无效')
+        fields=self.validate_fields(**{key:value.get(key,'') for key in ('name','protocol','host','port','username','password')})
+        portable_id=value.get('id')
+        if not isinstance(portable_id,str) or not re.fullmatch(r'[a-f0-9]{8,32}',portable_id):portable_id=None
+        existing=self.get_proxy(portable_id) if portable_id else None
+        if existing and all(existing.get(key,'')==fields[key] for key in fields):return existing
+        identifier=portable_id if portable_id and not existing else uuid.uuid4().hex
+        while self.get_proxy(identifier):identifier=uuid.uuid4().hex
+        stamp=time.strftime('%Y-%m-%d %H:%M:%S')
+        item=dict(id=identifier,created_at=stamp,updated_at=stamp,**fields)
+        self.proxies.append(item)
+        try:self._save()
+        except Exception:
+            self.proxies.remove(item);raise
+        return item
+
     def update_proxy(self, proxy_id, fields):
         candidate=self.prepare_update(proxy_id,fields)
         item=self.get_proxy(proxy_id)

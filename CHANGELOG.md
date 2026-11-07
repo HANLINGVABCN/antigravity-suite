@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0 — 2026-11-07
+
+- Added an export option to include the profile's associated proxy, including its credentials, as a separate proxy.json file.
+- Added validated, session-bound import previews and an optional proxy import choice only when the package actually contains a proxy file.
+- Packages without proxy data show “无代理文件” and import the profile directly without a proxy question.
+- Imported proxies are bound automatically when selected; colliding node IDs never overwrite different existing nodes.
+- Added transfer, rollback, preview expiry and compatibility regression tests.
+
 ## 0.2.1 — 2026-11-07
 
 - Prefill the node editor with its current complete, importable URI, including encoded credentials and its name.

@@ -481,6 +481,29 @@
 <textarea id="file-editor-content" class="form-control" style="height:320px;font-family:monospace;white-space:pre"></textarea></div>
 <div class="modal-footer"><button class="btn btn-secondary" onclick="document.getElementById('modal-file-editor').classList.remove('active')">取消</button>
 <button class="btn btn-primary" id="file-editor-save">保存文件</button></div></div></div>
+    <div class="modal-mask" id="modal-export-profile"><div class="modal-box">
+        <div class="modal-title">导出配置文件</div>
+        <p id="export-profile-name" style="margin-bottom:12px;"></p>
+        <label id="export-proxy-option" style="font-size:14px;"><input type="checkbox" id="export-include-proxy"> 导出对应代理</label>
+        <p id="export-proxy-detail" style="font-size:12px;color:var(--text-sub);margin-top:8px;"></p>
+        <p style="font-size:12px;color:var(--text-sub);margin-top:12px;">导出包包含账号凭据和聊天记录；附带代理时也会包含节点密码，请私有保管。</p>
+        <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:20px;">
+            <button class="btn btn-secondary" onclick="closeModals()">取消</button>
+            <button class="btn btn-primary" id="export-profile-button" onclick="downloadProfile()">导出</button>
+        </div>
+    </div></div>
+    <div class="modal-mask" id="modal-import-profile"><div class="modal-box">
+        <div class="modal-title">导入配置文件</div>
+        <p id="import-profile-name" style="margin-bottom:12px;"></p>
+        <label style="font-size:14px;"><input type="checkbox" id="import-include-proxy"> 导入对应代理</label>
+        <p id="import-proxy-detail" style="font-size:12px;color:var(--text-sub);margin-top:8px;"></p>
+        <p style="font-size:12px;color:var(--text-sub);margin-top:12px;">勾选后导入节点并自动绑定。不会覆盖已有的不同节点；不勾选则只导入配置。</p>
+        <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:20px;">
+            <button class="btn btn-secondary" onclick="cancelProfileImport()">取消</button>
+            <button class="btn btn-primary" id="import-profile-button" onclick="confirmProfileImport()">导入</button>
+        </div>
+    </div></div>
+    <div id="transfer-status" role="status" style="display:none;position:fixed;bottom:20px;left:20px;z-index:10001;max-width:calc(100vw - 40px);padding:14px 18px;background:#1e293b;color:#f1f5f9;border:1px solid #38bdf8;border-radius:8px;font-size:14px;"></div>
     <script src="/__suite/proxy-editor.js"></script>
     <script>
         let currentStatus = null;
@@ -489,6 +512,9 @@
         let currentEditingProfileId = null;
         let currentEditingProxyId = null;
         let originalProxyLink = "";
+        let exportProfileId = null;
+        let pendingProfileImport = null;
+        let transferStatusTimer = null;
 
         let settingsOriginalUser = "";
         async function openServiceSettings() {
@@ -1047,21 +1073,81 @@
             fetchStatus();
         }
 
-        function exportProfile(id) {
-            window.open(`/__suite/api/profiles/export?id=${id}`);
+        function showTransferStatus(message) {
+            const status = document.getElementById("transfer-status");
+            status.textContent = message; status.style.display = "block";
+            clearTimeout(transferStatusTimer);
+            transferStatusTimer = setTimeout(() => { status.style.display = "none"; }, 7000);
         }
-
+        function exportProfile(id) {
+            const profile = currentStatus.profiles.find(p => p.id === id);
+            const proxy = currentStatus.proxies.find(p => p.id === profile.proxy_id);
+            exportProfileId = id;
+            document.getElementById("export-profile-name").textContent = profile.name;
+            document.getElementById("export-proxy-option").style.display = proxy ? "block" : "none";
+            document.getElementById("export-include-proxy").checked = Boolean(proxy);
+            document.getElementById("export-proxy-detail").textContent = proxy ? proxy.name + " · " + proxy.protocol + "://" + proxy.host + ":" + proxy.port : "无对应代理";
+            document.getElementById("modal-export-profile").classList.add("active");
+        }
+        async function downloadProfile() {
+            if (!exportProfileId) return;
+            const button = document.getElementById("export-profile-button");
+            button.disabled = true; button.textContent = "导出中…";
+            try {
+                const id = exportProfileId;
+                const includeProxy = document.getElementById("export-include-proxy").checked;
+                const response = await fetch("/__suite/api/profiles/export?id=" + encodeURIComponent(id) + "&include_proxy=" + (includeProxy ? "1" : "0"));
+                const url = URL.createObjectURL(await response.blob());
+                const link = document.createElement("a"); link.href = url; link.download = "profile_" + id + ".tar.gz";
+                document.body.appendChild(link); link.click(); link.remove();
+                setTimeout(() => URL.revokeObjectURL(url), 30000);
+                closeModals(); showTransferStatus(includeProxy ? "配置已导出，包含对应代理" : "配置已导出，不包含代理文件");
+            } catch (error) { alert(error.message); }
+            finally { button.disabled = false; button.textContent = "导出"; }
+        }
         async function handleImport(event) {
             const file = event.target.files[0];
             if (!file) return;
-            const formData = new FormData();
-            formData.append("file", file);
-            await fetch("/__suite/api/profiles/import", {
-                method: "POST",
-                body: formData
-            });
-            alert("导入成功！");
-            fetchStatus();
+            event.target.value = "";
+            try {
+                if (pendingProfileImport) await cancelProfileImport();
+                const form = new FormData(); form.append("file", file);
+                showTransferStatus("正在检查配置包…");
+                const preview = await (await fetch("/__suite/api/profiles/import/preview", {method:"POST",body:form})).json();
+                pendingProfileImport = preview;
+                if (!preview.has_proxy) {
+                    showTransferStatus("无代理文件");
+                    await finishProfileImport(false);
+                    return;
+                }
+                document.getElementById("import-profile-name").textContent = preview.name;
+                document.getElementById("import-include-proxy").checked = true;
+                document.getElementById("import-proxy-detail").textContent = preview.proxy.name + " · " + preview.proxy.protocol + "://" + preview.proxy.host + ":" + preview.proxy.port;
+                document.getElementById("modal-import-profile").classList.add("active");
+                showTransferStatus("配置包包含对应代理，请选择是否导入");
+            } catch (error) { alert(error.message); }
+        }
+        async function finishProfileImport(includeProxy) {
+            if (!pendingProfileImport) return;
+            const result = await (await fetch("/__suite/api/profiles/import/confirm", {method:"POST",headers:{"Content-Type":"application/json"},
+                body:JSON.stringify({import_token:pendingProfileImport.import_token,include_proxy:includeProxy})})).json();
+            pendingProfileImport = null;
+            closeModals(); await fetchStatus();
+            showTransferStatus(result.proxy_message + "。配置已导入");
+        }
+        async function confirmProfileImport() {
+            const button = document.getElementById("import-profile-button");
+            button.disabled = true; button.textContent = "导入中…";
+            try { await finishProfileImport(document.getElementById("import-include-proxy").checked); }
+            catch (error) { alert(error.message); }
+            finally { button.disabled = false; button.textContent = "导入"; }
+        }
+        async function cancelProfileImport() {
+            if (pendingProfileImport) {
+                await fetch("/__suite/api/profiles/import/cancel", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({import_token:pendingProfileImport.import_token})});
+                pendingProfileImport = null;
+            }
+            document.getElementById("modal-import-profile").classList.remove("active");
         }
 
         // OAuth Flow (like CPA)
