@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import shutil
 
 import aiohttp
 import pytest
@@ -63,6 +64,11 @@ def test_node_detail_and_update_api_keep_ids_and_password_private_by_default(tmp
                 detail=await (await client.get(url+'/__suite/api/proxies/detail',params={'id':original_id})).json()
                 assert detail['proxy']['id']==original_id and detail['proxy']['has_password']
                 assert 'password' not in detail['proxy'] and detail['bound_profiles']==[dict(id=profile_id,name='A')]
+                assert 'link' not in detail['proxy']
+                response=await client.get(url+'/__suite/api/proxies/detail',params={'id':original_id,'include_link':'1'})
+                linked=(await response.json())['proxy']
+                assert linked['link']=='http://user:private-test-password@old.example:8080#N'
+                assert response.headers['Cache-Control']=='no-store'
                 response=await client.get(url+'/__suite/api/proxies/detail',params={'id':original_id,'reveal_password':'1'})
                 assert (await response.json())['proxy']['password']=='private-test-password'
                 assert response.headers['Cache-Control']=='no-store'
@@ -82,6 +88,91 @@ def test_node_detail_and_update_api_keep_ids_and_password_private_by_default(tmp
                 response=await client.post(url+'/__suite/api/proxies/update',json={'id':original_id,'link':'socks5://another.example:1080'})
                 assert response.status==200 and (await response.json())['proxy']['id']==original_id
                 assert len(state.proxies.list_proxies())==1
+        finally:await runner.cleanup()
+    asyncio.run(scenario())
+
+
+def test_saved_node_link_is_importable_with_ipv6_and_encoded_credentials(tmp_path):
+    nodes=ProxyManager(tmp_path)
+    node=nodes.add_proxy('节点 A#1','socks5h','2001:db8::1',1080,'a@b','p:@ /')
+    link=nodes.get_proxy_link(node)
+    parsed=nodes.parse_link(link)
+    assert link.startswith('socks5h://a%40b:p%3A%40%20%2F@[2001:db8::1]:1080#')
+    assert all(parsed[key]==node[key] for key in ('name','protocol','host','port','username','password'))
+
+
+@pytest.mark.skipif(shutil.which('node') is None,reason='Frontend helper test requires Node.js; Python/API tests still run')
+def test_editor_submits_both_representations_for_server_validation():
+    import subprocess,json
+    from pathlib import Path
+    editor=Path(__file__).parents[1]/'static/proxy-editor.js'
+    script=r'''
+const {buildUpdate} = require(process.argv[1]);
+const original = 'http://user:old-password@old.example:8080#Original';
+const fields = {name:'Renamed', host:'new.example',port:443,protocol:'https',username:'new',password:'new-password',clear_password:false};
+const manual = buildUpdate('stable-id', original, original, fields);
+const replaced = buildUpdate('stable-id', original, 'socks5://other.example:1080#New', fields);
+const cleared = buildUpdate('stable-id', original, '', {...fields,password:'',clear_password:true});
+process.stdout.write(JSON.stringify({manual,replaced,cleared}));
+'''
+    result=subprocess.run(['node','-e',script,str(editor)],capture_output=True,text=True,check=True)
+    values=json.loads(result.stdout)
+    assert values['manual']['id']=='stable-id' and values['manual']['name']=='Renamed' and values['manual']['host']=='new.example'
+    assert values['manual']['link']=='http://user:old-password@old.example:8080#Original' and values['manual']['password']=='new-password'
+    assert values['replaced']['link']=='socks5://other.example:1080#New' and values['replaced']['host']=='new.example'
+    assert values['cleared']['clear_password'] and 'link' not in values['cleared']
+
+
+def test_link_and_fields_must_match_before_node_is_saved(tmp_path):
+    nodes=ProxyManager(tmp_path)
+    node=nodes.add_proxy('N','http','node.example',8080,'user','private-password')
+    original=copy.deepcopy(node)
+    link=nodes.get_proxy_link(node)
+    fields=dict(name='N',protocol='http',host='node.example',port='8080',username='user',password='',clear_password=False,link=link)
+    nodes.update_proxy(node['id'],fields)
+    assert node['id']==original['id'] and node['password']=='private-password'
+    disk=nodes.file_path
+    saved_disk=__import__('pathlib').Path(disk).read_bytes()
+    for key,value in [('name','Different'),('protocol','socks5'),('host','other.example'),('port',8888),('username','other'),('password','a-new-secret'),('clear_password',True)]:
+        mismatch=dict(fields,**{key:value})
+        before=copy.deepcopy(node)
+        with pytest.raises(ValueError,match='保存失败.*不一致') as error:nodes.update_proxy(node['id'],mismatch)
+        assert node==before and __import__('pathlib').Path(disk).read_bytes()==saved_disk
+        assert 'private-password' not in str(error.value) and 'a-new-secret' not in str(error.value)
+    nodes.update_proxy(node['id'],dict(fields,name='New',host='other.example',password='changed',link='http://user:changed@other.example:8080#New'))
+    assert node['id']==original['id'] and node['created_at']==original['created_at'] and node['host']=='other.example'
+
+
+def test_creation_rejects_conflicting_link_and_accepts_matching_fields(tmp_path):
+    nodes=ProxyManager(tmp_path)
+    with pytest.raises(ValueError,match='不一致'):
+        nodes.add_from_input(dict(link='socks5://proxy.example:1080#N',name='N',protocol='http',host='proxy.example',port=1080))
+    assert not nodes.list_proxies()
+    node=nodes.add_from_input(dict(link='socks5://proxy.example:1080#N',name='N',protocol='socks5',host='proxy.example',port='1080'))
+    assert len(nodes.list_proxies())==1 and node['protocol']=='socks5'
+    original=copy.deepcopy(node)
+    with pytest.raises(ValueError):nodes.add_from_input(dict(link='http://one:80\nhttp://two:80',host='one'))
+    assert nodes.list_proxies()==[original]
+
+
+def test_link_conflict_api_reports_failure_without_changing_ids_or_bindings(tmp_path):
+    async def scenario():
+        app=create_app(config(tmp_path),supervisor=FakeSupervisor());state=app['state']
+        node=state.proxies.add_proxy('N','http','node.example',8080,'user','old')
+        profile=state.profiles.create_profile('P',node['id'])
+        original=copy.deepcopy(node)
+        runner,port=await start(app);url='http://127.0.0.1:%d'%port
+        try:
+            async with aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True)) as client:
+                await login(client,url)
+                response=await client.post(url+'/__suite/api/proxies/update',json={'id':node['id'],'link':state.proxies.get_proxy_link(node),'host':'conflict.example'})
+                result=await response.json()
+                assert response.status==400 and not result['ok'] and '地址' in result['error'] and '保存失败' in result['error']
+                assert node==original and profile['proxy_id']==node['id']
+                response=await client.post(url+'/__suite/api/proxies/update',json={'id':node['id'],'link':'http://user:old@new.example:8080#N','host':'new.example','password':''})
+                assert response.status==200 and (await response.json())['proxy']['id']==original['id']
+                response=await client.post(url+'/__suite/api/proxies',json={'link':'http://one.example:80#N','host':'another.example'})
+                assert response.status==400 and len(state.proxies.list_proxies())==1
         finally:await runner.cleanup()
     asyncio.run(scenario())
 

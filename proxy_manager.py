@@ -97,10 +97,9 @@ class ProxyManager:
         candidate=copy.deepcopy(item)
         link=fields.get('link','')
         if link:
-            if any(key in fields for key in ('protocol','host','port','username','password','clear_password')):
-                raise ValueError('请使用节点链接或手动字段中的一种方式修改')
-            candidate.update(self.parse_link(link,item['name']))
-            if 'name' in fields:candidate['name']=fields['name']
+            linked=self.parse_link(link,fields.get('name',item['name']))
+            self.check_link_consistency(linked,fields,item)
+            candidate.update(linked)
         else:
             for key in ('name','protocol','host','port','username'):
                 if key in fields:candidate[key]=fields[key]
@@ -108,6 +107,37 @@ class ProxyManager:
             elif fields.get('password') not in (None,''):candidate['password']=fields['password']
         candidate.update(self.validate_fields(**{key:candidate.get(key,'') for key in ('name','protocol','host','port','username','password')}))
         return candidate
+
+    @staticmethod
+    def check_link_consistency(linked, fields, existing=None):
+        manual=copy.deepcopy(linked)
+        checked=[]
+        for key in ('name','protocol','host','port','username'):
+            if key in fields:manual[key]=fields[key];checked.append(key)
+        if 'password' in fields or fields.get('clear_password') is True:
+            if fields.get('clear_password') is True:manual['password']=''
+            elif existing is not None and fields.get('password') in (None,''):
+                manual['password']=existing.get('password','')
+            else:manual['password']=fields.get('password','')
+            checked.append('password')
+        normalized=ProxyManager.validate_fields(**manual)
+        def comparable(key,value):
+            if key=='host':
+                try:return ipaddress.ip_address(value).compressed
+                except ValueError:return value.lower()
+            return value
+        labels=dict(name='节点名称',protocol='协议',host='地址',port='端口',username='用户名',password='密码')
+        conflicts=[labels[key] for key in checked if comparable(key,normalized[key])!=comparable(key,linked[key])]
+        if conflicts:raise ValueError('保存失败：节点链接与下方字段不一致（'+ '、'.join(conflicts)+'）。请改成一致，或清空链接后只用下方字段。')
+
+    def add_from_input(self, fields):
+        allowed={'name','protocol','host','port','username','password','link'}
+        if set(fields)-allowed:raise ValueError('创建节点不能指定 ID 或创建时间')
+        if fields.get('link'):
+            linked=self.parse_link(fields['link'],fields.get('name') or '导入节点')
+            self.check_link_consistency(linked,fields)
+            return self.add_proxy(**linked)
+        return self.add_proxy(fields.get('name',''),fields.get('protocol','http'),fields.get('host',''),fields.get('port',0),fields.get('username',''),fields.get('password',''))
 
     def update_proxy(self, proxy_id, fields):
         candidate=self.prepare_update(proxy_id,fields)
@@ -148,6 +178,11 @@ class ProxyManager:
         host = p['host']
         if ':' in host: host = '[' + host + ']'
         return f"{proto}://{auth}{host}:{p['port']}"
+
+    def get_proxy_link(self, p):
+        """Reconstruct an importable link from the node's current saved fields."""
+        if not p:raise ValueError('代理节点不存在')
+        return self.get_proxy_url(p)+'#'+urllib.parse.quote(p.get('name',''),safe='')
 
     def test_proxy(self, p_or_id):
         if isinstance(p_or_id, str):

@@ -318,7 +318,7 @@ async def api(request):
     if path=='proxies':
         if method=='GET': return web.json_response([{k:v for k,v in p.items() if k!='password'} for p in s.proxies.list_proxies()])
         if method=='POST':
-            async with s.lock: p=await asyncio.to_thread(s.proxies.add_proxy,d.get('name',''),d.get('protocol','http'),d.get('host',''),d.get('port',0),d.get('username',''),d.get('password',''))
+            async with s.lock: p=await asyncio.to_thread(s.proxies.add_from_input,d)
             return ok(proxy={k:v for k,v in p.items() if k!='password'})
         if method=='DELETE':
             px=request.query.get('id')
@@ -331,6 +331,7 @@ async def api(request):
             item=s.proxies.get_proxy(request.query.get('id'))
             if not item:raise ValueError('代理节点不存在')
             proxy=s.proxies.public_proxy(item,reveal_password=request.query.get('reveal_password')=='1')
+            if request.query.get('include_link')=='1':proxy['link']=s.proxies.get_proxy_link(item)
             bound=[dict(id=p['id'],name=p['name']) for p in s.profiles.list_profiles() if p.get('proxy_id')==item['id']]
         return ok(proxy=proxy,bound_profiles=bound)
     if path=='proxies/update' and method=='POST':
@@ -408,6 +409,7 @@ async def page(request):
     s=request.app['state']
     if request.path=='/__suite/floating.js': return web.FileResponse(s.static/'floating.js')
     if request.path=='/__suite/privacy.js': return web.FileResponse(s.static/'privacy.js')
+    if request.path=='/__suite/proxy-editor.js': return web.FileResponse(s.static/'proxy-editor.js')
     if request.path=='/__suite/portal' or (request.path=='/' and 'portal' in request.query):
         return web.FileResponse(s.static/'portal.html',headers={'Cache-Control':'no-store'})
     if request.path.startswith('/__suite/'): raise web.HTTPNotFound()

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1 — 2026-11-07
+
+- Prefill the node editor with its current complete, importable URI, including encoded credentials and its name.
+- Reject saves when both a URI and manual fields are supplied but conflict; report the differing fields without echoing passwords.
+- Keep existing values, IDs and bindings on conflicts; blank passwords still retain the saved value during edits.
+- Apply the same consistency check when creating a single node; batch links are imported without manual fields.
+
 ## 0.2.0 — 2026-11-07
 
 - Added proxy-node details and editing, including a read-only ID, timestamps, bound profiles and explicit password viewing/clearing.
