@@ -6,6 +6,7 @@ import subprocess
 import urllib.request
 import ipaddress
 import urllib.parse
+import copy
 from config import atomic_json
 
 class ProxyManager:
@@ -34,27 +35,90 @@ class ProxyManager:
                 return p
         return None
 
-    def add_proxy(self, name, protocol, host, port, username="", password=""):
-        protocol = protocol.lower().strip()
-        host = host.strip().strip('[]')
+    @staticmethod
+    def public_proxy(item, reveal_password=False):
+        if not item: raise ValueError('代理节点不存在')
+        result={k:v for k,v in item.items() if k!='password'}
+        result['has_password']=bool(item.get('password'))
+        if reveal_password: result['password']=item.get('password','')
+        return result
+
+    @staticmethod
+    def validate_fields(name, protocol, host, port, username='', password=''):
+        if not all(isinstance(value,str) for value in (name,protocol,host,username,password)):
+            raise ValueError('节点文本字段必须是字符串')
+        protocol=protocol.lower().strip()
         protocol={'ss5':'socks5','socks':'socks5'}.get(protocol,protocol)
-        if protocol not in ('http', 'https', 'socks4', 'socks4a', 'socks5', 'socks5h'):
+        host=host.strip().strip('[]')
+        if protocol not in ('http','https','socks4','socks4a','socks5','socks5h'):
             raise ValueError('支持 HTTP、HTTPS、SOCKS4 和 SOCKS5；其他协议请通过客户端转换为 HTTP/SOCKS 端口')
-        if not name.strip() or not host or any(c in host for c in '/@?# \\') or not 1 <= int(port) <= 65535:
+        try:
+            if isinstance(port,bool) or isinstance(port,float):raise ValueError()
+            port=int(port)
+        except (ValueError,TypeError):raise ValueError('端口必须是 1–65535 的整数')
+        if not name.strip() or not host or any(c in host for c in '/@?# \\') or any(ord(c)<32 or ord(c)==127 for c in host) or not 1<=port<=65535:
             raise ValueError('请填写有效的代理名称、主机和端口')
-        p_id = str(uuid.uuid4())[:8]
-        item = {
-            "id": p_id,
-            "name": name.strip(),
-            "protocol": protocol.lower().strip(), # http or socks5
-            "host": host.strip(),
-            "port": int(port),
-            "username": username.strip(),
-            "password": password,
-            "created_at": time.strftime("%Y-%m-%d %H:%M:%S")
-        }
+        if ':' in host:
+            try:ipaddress.IPv6Address(host)
+            except ValueError:raise ValueError('IPv6 地址格式无效')
+        return dict(name=name.strip(),protocol=protocol,host=host,port=port,username=username.strip(),password=password)
+
+    def add_proxy(self, name, protocol, host, port, username="", password=""):
+        fields=self.validate_fields(name,protocol,host,port,username,password)
+        p_id=uuid.uuid4().hex
+        while self.get_proxy(p_id):p_id=uuid.uuid4().hex
+        stamp=time.strftime('%Y-%m-%d %H:%M:%S')
+        item=dict(id=p_id,created_at=stamp,updated_at=stamp,**fields)
         self.proxies.append(item)
-        self._save()
+        try:self._save()
+        except Exception:
+            self.proxies.remove(item)
+            raise
+        return item
+
+    @staticmethod
+    def parse_link(row, fallback_name='导入节点'):
+        if not isinstance(row,str) or not row.strip() or len(row.splitlines())!=1:
+            raise ValueError('编辑节点时只能填写一个链接')
+        parsed=urllib.parse.urlsplit(row.strip() if '://' in row else 'http://'+row.strip())
+        if parsed.scheme not in ('http','https','socks4','socks4a','socks5','socks5h','ss5'):
+            raise ValueError('节点链接协议暂不支持，可用外部客户端转换为 HTTP/SOCKS 端口')
+        if parsed.path not in ('','/') or parsed.query or not parsed.hostname:
+            raise ValueError('节点链接无效')
+        port=parsed.port or (443 if parsed.scheme=='https' else 8080 if parsed.scheme=='http' else 1080)
+        return ProxyManager.validate_fields(urllib.parse.unquote(parsed.fragment) or fallback_name,
+            parsed.scheme,parsed.hostname,port,urllib.parse.unquote(parsed.username or ''),urllib.parse.unquote(parsed.password or ''))
+
+    def prepare_update(self, proxy_id, fields):
+        item=self.get_proxy(proxy_id)
+        if not item:raise ValueError('代理节点不存在')
+        allowed={'name','protocol','host','port','username','password','clear_password','link'}
+        if set(fields)-allowed:raise ValueError('节点 ID 和创建时间不可修改')
+        candidate=copy.deepcopy(item)
+        link=fields.get('link','')
+        if link:
+            if any(key in fields for key in ('protocol','host','port','username','password','clear_password')):
+                raise ValueError('请使用节点链接或手动字段中的一种方式修改')
+            candidate.update(self.parse_link(link,item['name']))
+            if 'name' in fields:candidate['name']=fields['name']
+        else:
+            for key in ('name','protocol','host','port','username'):
+                if key in fields:candidate[key]=fields[key]
+            if fields.get('clear_password') is True:candidate['password']=''
+            elif fields.get('password') not in (None,''):candidate['password']=fields['password']
+        candidate.update(self.validate_fields(**{key:candidate.get(key,'') for key in ('name','protocol','host','port','username','password')}))
+        return candidate
+
+    def update_proxy(self, proxy_id, fields):
+        candidate=self.prepare_update(proxy_id,fields)
+        item=self.get_proxy(proxy_id)
+        original=copy.deepcopy(item)
+        candidate['updated_at']=time.strftime('%Y-%m-%d %H:%M:%S')
+        item.clear();item.update(candidate)
+        try:self._save()
+        except Exception:
+            item.clear();item.update(original)
+            raise
         return item
 
     def delete_proxy(self, proxy_id):
@@ -66,16 +130,10 @@ class ProxyManager:
         if not rows or len(rows)>100: raise ValueError('请填写 1–100 个节点链接，每行一个')
         parsed_nodes=[]
         for index,row in enumerate(rows,1):
-            parsed=urllib.parse.urlsplit(row if '://' in row else 'http://'+row)
-            if parsed.scheme not in ('http','https','socks4','socks4a','socks5','socks5h','ss5'):
-                raise ValueError('第 %d 行协议暂不支持，可用外部客户端转换为 HTTP/SOCKS 端口'%index)
-            if parsed.path not in ('','/') or parsed.query or not parsed.hostname: raise ValueError('第 %d 行节点链接无效'%index)
-            port=parsed.port or (443 if parsed.scheme=='https' else 8080 if parsed.scheme=='http' else 1080)
-            if not 1<=port<=65535: raise ValueError('第 %d 行端口无效'%index)
-            parsed_nodes.append((urllib.parse.unquote(parsed.fragment) or '导入节点-%d'%index,
-                parsed.scheme,parsed.hostname,port,urllib.parse.unquote(parsed.username or ''),urllib.parse.unquote(parsed.password or '')))
+            try:parsed_nodes.append(self.parse_link(row,'导入节点-%d'%index))
+            except ValueError as e:raise ValueError('第 %d 行：%s'%(index,e))
         original=list(self.proxies)
-        try:return [self.add_proxy(*node) for node in parsed_nodes]
+        try:return [self.add_proxy(**node) for node in parsed_nodes]
         except Exception:
             self.proxies=original;self._save();raise
 

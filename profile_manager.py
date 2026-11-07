@@ -78,12 +78,22 @@ class ProfileManager:
     def update_profile(self,p_id,name=None,proxy_id=None,email=None):
         p=self.get_profile(p_id)
         if not p: raise ValueError('档案不存在')
+        updated=copy.deepcopy(p)
         if name is not None:
-            if not name.strip(): raise ValueError('档案名称不能为空')
-            p['name']=name.strip()
-        if proxy_id is not None: p['proxy_id']=proxy_id
-        if email is not None: p['email']=email.strip()
-        self._save()
+            if not isinstance(name,str) or not name.strip(): raise ValueError('档案名称不能为空')
+            updated['name']=name.strip()
+        if proxy_id is not None:
+            if not isinstance(proxy_id,str):raise ValueError('代理绑定 ID 无效')
+            updated['proxy_id']=proxy_id
+        if email is not None:
+            if not isinstance(email,str):raise ValueError('邮箱必须是文本')
+            updated['email']=email.strip()
+        original=copy.deepcopy(p)
+        p.clear();p.update(updated)
+        try:self._save()
+        except Exception:
+            p.clear();p.update(original)
+            raise
         return p
     def delete_profile(self,p_id):
         remove_path(self.profile_dir(p_id))

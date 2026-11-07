@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.0 — 2026-11-07
+
+- Added proxy-node details and editing, including a read-only ID, timestamps, bound profiles and explicit password viewing/clearing.
+- Connection fields and single-link replacements update the existing node; proxy bindings and node/profile IDs stay unchanged.
+- Reject ID/creation-time edits and roll back in-memory updates when persistence fails.
+- Require stopping the active IDE before changing its node connection, while allowing label-only edits.
+- Added regression coverage for stable IDs, persisted edits, binding preservation, password semantics and atomic failures.
+
 ## 0.1.0 — 2026-11-07
 
 First public release.

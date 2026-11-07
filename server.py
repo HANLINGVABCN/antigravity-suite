@@ -248,6 +248,7 @@ async def api(request):
         files=[dict(path=str(p.relative_to(folder/'store')).replace('\\','/'),size=p.stat().st_size) for p in (folder/'store').rglob('*') if p.is_file() and not p.is_symlink()]
         return ok(profile=s.profiles.get_profile(p_id),files=files)
     if path=='profiles/update' and method=='POST':
+        if set(d)-{'id','name','proxy_id','email'}:raise ValueError('档案 ID 和创建时间不可修改')
         require_proxy(d.get('proxy_id'))
         async with s.lock:
             p=s.profiles.get_profile(d.get('id'))
@@ -325,6 +326,31 @@ async def api(request):
                 if any(p.get('proxy_id')==px for p in s.profiles.list_profiles()): raise ValueError('代理仍绑定在档案中，请先解除绑定')
                 s.proxies.delete_proxy(px)
             return ok()
+    if path=='proxies/detail' and method=='GET':
+        async with s.lock:
+            item=s.proxies.get_proxy(request.query.get('id'))
+            if not item:raise ValueError('代理节点不存在')
+            proxy=s.proxies.public_proxy(item,reveal_password=request.query.get('reveal_password')=='1')
+            bound=[dict(id=p['id'],name=p['name']) for p in s.profiles.list_profiles() if p.get('proxy_id')==item['id']]
+        return ok(proxy=proxy,bound_profiles=bound)
+    if path=='proxies/update' and method=='POST':
+        proxy_id=d.get('id')
+        fields={key:value for key,value in d.items() if key!='id'}
+        async with s.lock:
+            await s.ensure_switch_allowed()
+            candidate=s.proxies.prepare_update(proxy_id,fields)
+            item=s.proxies.get_proxy(proxy_id)
+            connection_changed=any(item.get(key)!=candidate.get(key) for key in ('protocol','host','port','username','password'))
+            active=s.profiles.get_profile(s.active)
+            running=bool(s.supervisor.process and s.supervisor.process.poll() is None)
+            if connection_changed and running and active and active.get('proxy_id')==proxy_id:
+                return web.json_response(dict(ok=False,error='此节点正被当前 IDE 使用。请先停止 IDE，再修改连接信息；节点 ID 和绑定保持原值。',requires_stop=True),status=409)
+            updated=await asyncio.to_thread(s.proxies.update_proxy,proxy_id,fields)
+            if connection_changed:
+                for p in s.profiles.list_profiles():
+                    if p.get('proxy_id')==proxy_id:s.diagnostics.pop(p['id'],None)
+                s._auth_cache=None
+        return ok(proxy=s.proxies.public_proxy(updated),connection_changed=connection_changed)
     if path=='proxies/test' and method=='POST': return web.json_response(await asyncio.to_thread(s.proxies.test_proxy,d.get('proxy_id')))
     if path=='proxies/import-links' and method=='POST':
         async with s.lock: nodes=await asyncio.to_thread(s.proxies.import_links,d.get('links',''))

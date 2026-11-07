@@ -298,8 +298,13 @@
     <!-- Modal: 添加代理 -->
     <div class="modal-mask" id="modal-proxy">
         <div class="modal-box">
-            <div class="modal-title">添加出站代理节点</div>
-<div class="form-group"><label>节点链接（每行一个，填写后优先使用链接）</label><textarea class="form-control" id="proxy-links" rows="3" placeholder="http://账号:密码@地址:端口#备注&#10;socks5://地址:端口&#10;https://地址:端口"></textarea>
+            <div class="modal-title" id="proxy-modal-title">添加出站代理节点</div>
+            <div id="proxy-identity" style="display:none;">
+                <div class="form-group"><label for="proxy-id">固定 ID（不可修改）</label><input class="form-control" id="proxy-id" readonly></div>
+                <div class="form-group" style="font-size:12px;color:var(--text-sub);">创建时间：<span id="proxy-created">-</span><br>更新时间：<span id="proxy-updated">-</span><br>绑定配置：<span id="proxy-bound">-</span></div>
+                <p style="font-size:12px;color:var(--text-sub);margin-bottom:12px;">修改名称、地址或认证不会改变 ID，也不会解除配置绑定。当前 IDE 正在使用此节点时，修改连接信息前需先停止 IDE。</p>
+            </div>
+<div class="form-group"><label id="proxy-links-label" for="proxy-links">节点链接（每行一个，填写后优先使用链接）</label><textarea class="form-control" id="proxy-links" rows="3" placeholder="http://账号:密码@地址:端口#备注&#10;socks5://地址:端口&#10;https://地址:端口"></textarea>
 <small>支持 HTTP、HTTPS、SOCKS4/4a、SOCKS5/5h，以及 地址:端口。SS、VMess、VLESS 等可先用现有客户端转为 HTTP/SOCKS 端口。</small></div>
             <div class="form-group">
                 <label>节点名称 (如: 台湾HiNet家宽1、日本跳板)</label>
@@ -308,7 +313,7 @@
             <div class="form-group">
                 <label>协议类型</label>
                 <select class="form-control" id="proxy-in-proto">
-                    <option value="socks5">SOCKS5</option><option value="socks5h">SOCKS5（远程 DNS）</option><option value="socks4a">SOCKS4a</option><option value="https">HTTPS</option>
+                    <option value="socks5">SOCKS5</option><option value="socks5h">SOCKS5（远程 DNS）</option><option value="socks4">SOCKS4</option><option value="socks4a">SOCKS4a</option><option value="https">HTTPS</option>
                     <option value="http">HTTP</option>
                 </select>
             </div>
@@ -329,12 +334,17 @@
                 </div>
                 <div>
                     <label>密码 (可选)</label>
-                    <input class="form-control" id="proxy-in-pass" type="password" placeholder="可留空">
+                    <input class="form-control" id="proxy-in-pass" type="password" placeholder="可留空" autocomplete="off">
+                    <div id="proxy-password-actions" style="display:none;font-size:12px;line-height:1.8;margin-top:8px;">
+                        <span id="proxy-password-status"></span><br>
+                        <button type="button" class="btn btn-secondary" id="proxy-password-reveal" onclick="showProxyPassword()">查看已保存密码</button>
+                        <label style="margin-top:8px;"><input type="checkbox" id="proxy-clear-password"> 清除已保存密码</label>
+                    </div>
                 </div>
             </div>
             <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
                 <button class="btn btn-secondary" onclick="closeModals()">取消</button>
-                <button class="btn btn-primary" onclick="saveProxy()">保存节点</button>
+                <button class="btn btn-primary" id="proxy-save-button" onclick="saveProxy()">保存节点</button>
             </div>
         </div>
     </div>
@@ -475,6 +485,7 @@
         let coreStatus = null;
         let coreInstallPollTimer = null;
         let currentEditingProfileId = null;
+        let currentEditingProxyId = null;
 
         let settingsOriginalUser = "";
         async function openServiceSettings() {
@@ -676,8 +687,10 @@
                         <div class="card-meta">
                             <span>地址: ${escapeHtml(px.host)}:${escapeHtml(px.port)}</span>
                             <span>鉴权: ${px.username ? '账号密码保护' : '免密'}</span>
+                            <span>ID: ${escapeHtml(px.id)}</span>
                         </div>
                         <div class="card-actions">
+                            <button class="btn btn-secondary" onclick="openEditProxy('${px.id}')">详情与编辑</button>
                             <button class="btn btn-secondary" style="font-size:12px; padding:4px 10px;" id="test-btn-${px.id}" onclick="testProxy('${px.id}')">⚡ 测试连通性与出口 IP</button>
                             <span id="test-result-${px.id}" style="font-size:12px; color:var(--text-sub);"></span>
                         </div>
@@ -705,7 +718,54 @@
 
         // Modals
         function openAddProxyModal() {
+            currentEditingProxyId = null;
+            document.getElementById("proxy-modal-title").textContent = "添加出站代理节点";
+            document.getElementById("proxy-identity").style.display = "none";
+            document.getElementById("proxy-password-actions").style.display = "none";
+            document.getElementById("proxy-links-label").textContent = "节点链接（每行一个，填写后优先使用链接）";
+            for (const id of ["proxy-links","proxy-in-name","proxy-in-host","proxy-in-port","proxy-in-user","proxy-in-pass"]) document.getElementById(id).value = "";
+            document.getElementById("proxy-in-proto").value = "socks5";
+            document.getElementById("proxy-in-pass").type = "password";
+            document.getElementById("proxy-in-pass").placeholder = "可留空";
+            document.getElementById("proxy-clear-password").checked = false;
+            document.getElementById("proxy-save-button").textContent = "保存节点";
             document.getElementById("modal-proxy").classList.add("active");
+        }
+        async function openEditProxy(id) {
+            const data = await (await fetch("/__suite/api/proxies/detail?id=" + encodeURIComponent(id))).json();
+            const proxy = data.proxy;
+            openAddProxyModal();
+            currentEditingProxyId = proxy.id;
+            document.getElementById("proxy-modal-title").textContent = "节点详情与编辑";
+            document.getElementById("proxy-identity").style.display = "block";
+            document.getElementById("proxy-id").value = proxy.id;
+            document.getElementById("proxy-created").textContent = proxy.created_at || "-";
+            document.getElementById("proxy-updated").textContent = proxy.updated_at || proxy.created_at || "-";
+            document.getElementById("proxy-bound").textContent = data.bound_profiles.map(p => p.name + "（" + p.id + "）").join("、") || "未绑定";
+            document.getElementById("proxy-links-label").textContent = "替换节点链接（可选，仅一个链接，保存后 ID 保持不变）";
+            document.getElementById("proxy-in-name").value = proxy.name;
+            document.getElementById("proxy-in-proto").value = proxy.protocol;
+            document.getElementById("proxy-in-host").value = proxy.host;
+            document.getElementById("proxy-in-port").value = proxy.port;
+            document.getElementById("proxy-in-user").value = proxy.username || "";
+            document.getElementById("proxy-in-pass").placeholder = "留空保持原密码";
+            document.getElementById("proxy-password-actions").style.display = "block";
+            document.getElementById("proxy-password-status").textContent = proxy.has_password ? "已保存密码；留空不修改" : "未保存密码";
+            document.getElementById("proxy-password-reveal").textContent = "查看已保存密码";
+            document.getElementById("proxy-password-reveal").disabled = !proxy.has_password;
+            document.getElementById("proxy-save-button").textContent = "保存修改";
+        }
+        async function showProxyPassword() {
+            const input = document.getElementById("proxy-in-pass");
+            const button = document.getElementById("proxy-password-reveal");
+            if (input.type === "text") { input.type = "password"; button.textContent = "显示密码"; return; }
+            if (!input.value && currentEditingProxyId) {
+                const id = currentEditingProxyId;
+                const data = await (await fetch("/__suite/api/proxies/detail?id=" + encodeURIComponent(id) + "&reveal_password=1")).json();
+                if (currentEditingProxyId !== id) return;
+                input.value = data.proxy.password || "";
+            }
+            input.type = "text"; button.textContent = "隐藏密码";
         }
         function openCreateModal() {
             document.getElementById("modal-create-profile").classList.add("active");
@@ -717,11 +777,36 @@
         }
         function closeModals() {
             document.querySelectorAll(".modal-mask").forEach(m => m.classList.remove("active"));
+            currentEditingProxyId = null;
+            document.getElementById("proxy-in-pass").value = "";
+            document.getElementById("proxy-in-pass").type = "password";
         }
 
         // Actions
         async function saveProxy() {
             const links = document.getElementById("proxy-links").value.trim();
+            if (currentEditingProxyId) {
+                let data = {id:currentEditingProxyId};
+                if (links) {
+                    data.link = links;
+                } else {
+                    data = {...data,name:document.getElementById("proxy-in-name").value,
+                        protocol:document.getElementById("proxy-in-proto").value,
+                        host:document.getElementById("proxy-in-host").value,
+                        port:document.getElementById("proxy-in-port").value,
+                        username:document.getElementById("proxy-in-user").value,
+                        password:document.getElementById("proxy-in-pass").value,
+                        clear_password:document.getElementById("proxy-clear-password").checked};
+                }
+                const button = document.getElementById("proxy-save-button");
+                button.disabled = true;
+                try {
+                    await fetch("/__suite/api/proxies/update", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(data)});
+                    closeModals(); await fetchStatus();
+                } catch (error) { alert(error.message); }
+                finally { button.disabled = false; }
+                return;
+            }
             if (links) {
                 await fetch("/__suite/api/proxies/import-links", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({links})});
                 document.getElementById("proxy-links").value = ""; closeModals(); await fetchStatus(); return;
