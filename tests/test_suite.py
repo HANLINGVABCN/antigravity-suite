@@ -207,14 +207,15 @@ def test_failed_switch_restores_previous_account(tmp_path):
     async def scenario():
         cfg=config(tmp_path); supervisor=FakeSupervisor()
         app=create_app(cfg,supervisor=supervisor); s=app['state']
-        a=s.profiles.create_profile('A'); b=s.profiles.create_profile('B')
+        a=s.profiles.create_profile('A',email='a@example.invalid'); b=s.profiles.create_profile('B')
         await s.activate(a['id'])
         runtime=s.profiles.runtime_targets[0][0]
-        runtime.parent.mkdir(parents=True,exist_ok=True); runtime.write_text('account-A')
+        runtime.parent.mkdir(parents=True,exist_ok=True)
+        atomic_json(runtime,dict(token=dict(refresh_token='account-A'),id_token_email='a@example.invalid'))
         supervisor.fail=True
         with pytest.raises(RuntimeError): await s.activate(b['id'])
         assert s.active==a['id']
-        assert runtime.read_text()=='account-A'
+        assert json.loads(runtime.read_text())['token']['refresh_token']=='account-A'
         assert supervisor.active_port and not s.busy
         assert supervisor.events.index('stop')<supervisor.events.index('start')
     asyncio.run(scenario())

@@ -47,12 +47,16 @@ class NativeRuntime:
 
     def validate(self, spec):
         data=self.manager.data_dir.resolve()
+        if not isinstance(spec.get('native_uid'),int) or isinstance(spec.get('native_uid'),bool) or spec['native_uid']<0:
+            raise ValueError('共用配置所属用户无效')
+        if spec.get('runtime_kind')=='internal-login':
+            home=(data/'login-environment/home').resolve()
+            if not home.is_relative_to(data) or Path(spec['native_home']).resolve()!=home or Path(spec['native_config_dir']).resolve()!=home/'.config/Antigravity':raise ValueError('内部登录运行目录无效')
+            return
         for name in ('native_home','native_config_dir'):
             path=Path(spec[name]).resolve()
             if not path.is_absolute() or path==data or path.is_relative_to(data) or len(path.parts)<2:
                 raise ValueError('已有共用配置必须位于私有档案目录之外')
-        if not isinstance(spec.get('native_uid'),int):
-            raise ValueError('共用配置所属用户无效')
 
     def register_installation(self, spec):
         key=str(Path(spec['home']).resolve())+'\0'+str(Path(spec['config_dir']).resolve())
@@ -83,7 +87,7 @@ class NativeRuntime:
         if not self.installations and profiles is not None:
             available=[p for p in profiles if p.get('kind')=='existing' and p.get('available')]
         if self.binding:
-            self.selected=next((p for p in available if p['id']==self.binding['native']['id']),None)
+            self.selected=self.binding['native'] if self.binding['native'].get('runtime_kind')=='internal-login' else next((p for p in available if p['id']==self.binding['native']['id']),None)
         elif len(available)==1:
             self.selected=available[0]
         else:
@@ -101,8 +105,8 @@ class NativeRuntime:
             return self.binding['profile_id']
         return profile_id
 
-    def observe_login(self, force=False):
-        native=self.binding['native'] if self.binding else self.selected
+    def observe_login(self, force=False, native=None):
+        native=native or (self.binding['native'] if self.binding else self.selected)
         if not native:return None
         file=Path(native['native_home'])/'.gemini/jetski-standalone-oauth-token'
         token=self.manager.installed_token(file)
@@ -112,7 +116,7 @@ class NativeRuntime:
                 if not isinstance(value,dict) or not isinstance(value.get('token',{}),dict):return None
                 if value.get('token',{}).get('refresh_token'):return None
             except (OSError,ValueError):return None
-        key=(native['id'],token['fingerprint'] if token else None,token['email'] if token else '')
+        key=(native['id'],token.get('full_fingerprint') if token else None)
         ignored=self._ignored_login
         if ignored:
             same=token and ignored['native_id']==native['id'] and (ignored['fingerprint']==token['fingerprint'] or
@@ -129,8 +133,12 @@ class NativeRuntime:
         atomic_json(self.file,self.binding)
 
     def detach(self):
+        if self.binding and self.binding['native'].get('runtime_kind')=='internal-login':self.selected=self.binding['native']
         self.binding=None
         self.file.unlink(missing_ok=True)
+
+    def clear_ignored_login(self):
+        self._ignored_login=None;self.ignore_file.unlink(missing_ok=True)
 
     def ignore_current_login(self):
         native=self.binding['native'] if self.binding else self.selected

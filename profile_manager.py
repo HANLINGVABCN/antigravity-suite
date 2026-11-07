@@ -129,7 +129,8 @@ class ProfileManager:
                     part=value['id_token'].split('.')[1]
                     email=json.loads(base64.urlsafe_b64decode(part+'='*(-len(part)%4))).get('email','')
                 except (ValueError,IndexError,TypeError):pass
-            return dict(fingerprint=hashlib.sha256(refresh.encode()).hexdigest(),email=email if isinstance(email,str) and len(email)<=320 else '')
+            return dict(fingerprint=hashlib.sha256(refresh.encode()).hexdigest(),email=email if isinstance(email,str) and len(email)<=320 else '',
+                full_fingerprint=hashlib.sha256(json.dumps(value,sort_keys=True,ensure_ascii=True).encode()).hexdigest())
         except (OSError,ValueError,TypeError,AttributeError):return None
 
     def saved_token_metadata(self, profile_id):
@@ -256,9 +257,10 @@ class ProfileManager:
         if not isinstance(p_id,str) or not re.fullmatch(r'[a-f0-9]{8,32}',p_id) or not self.get_profile(p_id):
             raise ValueError('档案不存在')
         return self.profiles_dir / p_id
-    def create_profile(self, name, proxy_id='', email=''):
+    def create_profile(self, name, proxy_id='', email='', identifier=None):
         if not isinstance(name,str) or not name.strip(): raise ValueError('档案名称不能为空')
-        p_id = uuid.uuid4().hex
+        p_id = identifier or uuid.uuid4().hex
+        if not isinstance(p_id,str) or not re.fullmatch(r'[a-f0-9]{32}',p_id) or self.get_profile(p_id):raise ValueError('新配置身份无效或已存在')
         (self.profiles_dir / p_id / 'store').mkdir(parents=True, mode=0o700)
         stamp = time.strftime('%Y-%m-%d %H:%M:%S')
         item = dict(id=p_id,name=name.strip(),email=email.strip() or '未登录',proxy_id=proxy_id or '',
@@ -266,6 +268,20 @@ class ProfileManager:
         self.profiles.append(item)
         self._save()
         return item
+
+    def renew_session_token(self, p_id, native, expected):
+        binding=self.native_runtime.binding
+        if binding and (binding['profile_id']!=p_id or binding['native']['id']!=native['id']):raise ValueError('不能将当前凭据写入其他登录存档')
+        if self.bound_profile is not None and self.bound_profile!=p_id:raise ValueError('不能将当前凭据写入其他登录存档')
+        if not self.account_matches(p_id,expected):raise ValueError('当前登录与存档不匹配')
+        file=Path(native['native_home'])/'.gemini/jetski-standalone-oauth-token'
+        metadata=self.installed_token(file)
+        if not metadata or metadata['full_fingerprint']!=expected['full_fingerprint']:raise ValueError('凭据仍在更新，请稍后重试')
+        value=json.loads(file.read_text(encoding='utf-8'))
+        if hashlib.sha256(json.dumps(value,sort_keys=True,ensure_ascii=True).encode()).hexdigest()!=expected['full_fingerprint']:raise ValueError('凭据仍在更新，请稍后重试')
+        folder=self.profile_dir(p_id)
+        atomic_json(folder/'store/jetski-standalone-oauth-token',value)
+        if (folder/'home/.suite-home-initialized').is_file():atomic_json(folder/'home/.gemini/jetski-standalone-oauth-token',value)
     def update_profile(self,p_id,name=None,proxy_id=None,email=None):
         p=self.get_profile(p_id)
         if not p: raise ValueError('档案不存在')

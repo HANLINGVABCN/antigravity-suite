@@ -308,3 +308,19 @@ def test_logout_notice_keeps_a_card_and_new_b_has_a_different_card(portal):
     ids=page.locator('#profile-container [data-card-id]').evaluate_all('elements => elements.map(element => element.dataset.cardId)')
     assert a['id'] in ids and b['id'] in ids and a['id']!=b['id']
     assert state.profiles.get_profile(a['id'])['name']==original_name and state.profiles.get_profile(a['id'])['email']=='dummy-account@example.invalid'
+
+
+def test_exit_progress_and_login_entry_are_clear_and_reachable(portal):
+    page=portal['page'];state=portal['state'];state.active=portal['profile']['id']
+    state.exit_state=dict(phase='saving',message='正在保存登录存档')
+    page.reload()
+    pw.expect(page.locator('#btn-exit-session')).to_be_disabled()
+    pw.expect(page.locator('#google-auth-notice')).to_contain_text('正在保存登录存档')
+    state.active=None;state.cfg['native_logged_out']=True;state.login_environment_open=True;state.supervisor.active_port=45000
+    state.exit_state=dict(phase='ready',message='已退出配置')
+    state.session_ops.desktop_status=dict(installed=True,renderer_ready=True)
+    page.reload()
+    pw.expect(page.locator('#google-auth-notice').get_by_role('button',name='进入登录界面')).to_be_visible()
+    page.locator('#google-auth-notice').get_by_role('button',name='进入登录界面').click(trial=True)
+    pw.expect(page.locator('#logout-guard-status')).to_contain_text('桌面退出保护已验证')
+    pw.expect(page.locator('#profile-container [data-card-id]')).to_have_count(1)

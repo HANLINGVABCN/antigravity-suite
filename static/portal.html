@@ -19,7 +19,7 @@
         <div class="header-actions">
             <button class="btn btn-secondary" id="btn-suite-update" onclick="openSuiteUpdate()">更新项目</button>
             <button class="btn btn-primary" id="btn-core-manage" disabled onclick="openCoreInstallModal()">检测反重力…</button>
-            <button class="btn btn-secondary" onclick="openServiceSettings()">服务设置</button><button class="btn btn-secondary" onclick="stopEngine()">停止 IDE</button><button class="btn btn-secondary" onclick="logout()">登出</button>
+            <button class="btn btn-secondary" onclick="openServiceSettings()">服务设置</button><button class="btn btn-secondary" id="btn-exit-session" onclick="exitCurrentSession()">退出配置</button><button class="btn btn-secondary" onclick="stopEngine()">停止 IDE</button><button class="btn btn-secondary" onclick="logout()">退出后台</button>
         </div>
     </header>
     <div class="overview-strip" aria-label="运行状态">
@@ -28,7 +28,7 @@
             <div class="pill" id="pill-cur-ip">出口检测中...</div>
             <div class="pill" id="pill-suite-version">项目版本加载中…</div>
     </div>
-    <div class="history-tip">聊天记录由所有配置共享，切换账号不会隐藏其他账号的本地记录。</div><div id="google-auth-notice" role="status" style="margin:12px 24px;padding:12px;border:1px solid var(--border);border-radius:8px;font-size:13px">等待检查 Google 登录状态</div>
+    <div class="history-tip">聊天记录由所有配置共享，切换账号不会隐藏其他账号的本地记录。</div><div id="google-auth-notice" role="status" style="margin:12px 24px;padding:12px;border:1px solid var(--border);border-radius:8px;font-size:13px">等待检查 Google 登录状态</div><div id="logout-guard-status" role="status" class="history-tip"></div>
 
     <main>
         <!-- 左侧：Google 账号与配置档案 -->

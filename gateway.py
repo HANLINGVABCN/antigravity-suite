@@ -1,10 +1,12 @@
 import asyncio
+import re
 from http.cookies import SimpleCookie
 
 from aiohttp import ClientError, WSMsgType, web
 from multidict import CIMultiDict
 from yarl import URL
 from privacy import CLIENT_IP_HEADERS, inject_privacy, privacy_headers
+from logout_protection import blocks_logout,transform_client,WARNING
 
 HOP = {'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
        'te', 'trailer', 'transfer-encoding', 'upgrade'}
@@ -17,6 +19,7 @@ def clean_headers(headers):
 
 async def proxy(request):
     state = request.app['state']
+    if blocks_logout(request.raw_path):return web.json_response(dict(ok=False,blocked_logout=True,error=WARNING),status=403)
     port = state.supervisor.active_port
     if state.busy or not port:
         if request.path == '/' and request.method == 'GET':
@@ -41,13 +44,14 @@ async def proxy(request):
     if request.headers.get('Upgrade', '').lower() == 'websocket':
         return await websocket(request, url, headers, ssl_option)
     inject = request.method == 'GET' and (request.path == '/' or 'text/html' in request.headers.get('Accept', ''))
-    if inject: headers['Accept-Encoding'] = 'identity'
+    client_script=request.method=='GET' and request.path=='/main.js'
+    if inject or client_script: headers['Accept-Encoding'] = 'identity'
     body = request.content.iter_chunked(65536) if request.can_read_body else None
     response = None
     try:
         async with state.http.request(request.method, url, headers=headers, data=body,
                                       ssl=ssl_option, allow_redirects=False,
-                                      auto_decompress=inject) as upstream:
+                                      auto_decompress=inject or client_script) as upstream:
             out = clean_headers(upstream.headers)
             out.popall('Link',None)  # Prevent origin-supplied external preconnect/preload hints.
             location=out.get('Location')
@@ -57,6 +61,17 @@ async def proxy(request):
                     return web.json_response({'ok':False,'error':'隐私保护已阻止外部跳转，请在配置大厅授权账号'},status=403)
                 out['Location']=destination.raw_path_qs
             out.popall('Refresh',None)
+            if client_script and upstream.status==200:
+                chunks=bytearray()
+                async for chunk in upstream.content.iter_chunked(65536):
+                    chunks.extend(chunk)
+                    if len(chunks)>32*1024*1024:raise ValueError('客户端脚本超过大小限制')
+                bootstrap=(state.static/'logout-guard.js').read_text(encoding='utf-8')
+                source,supported=transform_client(chunks.decode('utf-8'),bootstrap)
+                state.session_ops.desktop_status['web_verified']=supported
+                for key in ('Content-Length','Content-Encoding','ETag','Content-MD5'):out.popall(key,None)
+                out['Cache-Control']='no-store'
+                return web.Response(body=source.encode('utf-8'),status=200,headers=out)
             # Namespace browser cookies too; switching profiles must not reuse them.
             values=out.popall('Set-Cookie',[])
             for value in values:
@@ -74,6 +89,10 @@ async def proxy(request):
                     if len(chunks) > 16 * 1024 * 1024: raise ValueError('IDE 首页超过大小限制')
                 data = bytes(chunks)
                 data = inject_privacy(data, state.active)
+                guard=b'<script src="/__suite/logout-guard.js"></script>'
+                if guard not in data:
+                    head=re.search(br'<head\b[^>]*>',data,re.I)
+                    data=data[:head.end()]+guard+data[head.end():] if head else guard+data
                 marker = b'<script src="/__suite/floating.js"></script>'
                 if marker not in data:
                     pos = data.lower().rfind(b'</body>')

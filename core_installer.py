@@ -47,6 +47,8 @@ class CoreInstaller:
                 from discovery import engine_processes
                 if any(Path(p['executable']).resolve()==binary for p in engine_processes()):raise ValueError('仍有反重力实例运行，请先停止后卸载')
             if not directory.exists():raise ValueError('本体已经不存在')
+            from desktop_guard import restore
+            await asyncio.to_thread(restore,Path(self.cfg.get('data_dir',self.cfg['runtime_home'])))
             backups=Path(self.cfg.get('data_dir',self.cfg['runtime_home'])).parent/'antigravity-suite-backups'
             backups.mkdir(parents=True,exist_ok=True,mode=0o700)
             target=backups/('uninstalled-antigravity-'+str(time.time_ns()))

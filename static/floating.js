@@ -6,6 +6,15 @@
 (function() {
     function escapeHtml(value) { const e=document.createElement('span'); e.textContent=String(value ?? ''); return e.innerHTML; }
     async function suiteFetch(url, options) {
+        if (window.antigravitySuiteNative) {
+            const operations={'/__suite/api/status':'status','/__suite/api/system/auth-status':'auth-status',
+                '/__suite/api/profiles/switch':'switch','/__suite/api/system/restart':'restart','/__suite/api/sessions/exit':'exit'};
+            const operation=operations[url];
+            if(!operation)throw new Error('原生面板不支持此操作');
+            const fields=options?.body?JSON.parse(options.body):{};
+            const result=await window.antigravitySuiteNative.request(operation,fields);
+            return {ok:true,json:async()=>result};
+        }
         const response=await fetch(url, options);
         if (!response.ok) { const data=await response.clone().json().catch(() => ({})); throw new Error(data.error || '请求失败'); }
         return response;
@@ -279,6 +288,7 @@
         <div class="ag-footer">
             <button class="ag-btn ag-btn-secondary" id="ag-btn-portal">🚪 返回完整配置大厅</button>
             <button class="ag-btn ag-btn-secondary" id="ag-btn-restart">🔄 重启当前核心引擎</button>
+            <button class="ag-btn ag-btn-primary" id="ag-btn-exit-session">退出当前配置</button>
         </div>
     `;
     document.body.appendChild(drawer);
@@ -313,12 +323,30 @@
     drawer.querySelector(".ag-close-btn").addEventListener("click", closeDrawer);
 
     document.getElementById("ag-btn-portal").addEventListener("click", function() {
-        window.location.href = "/?portal=1";
+        if(window.antigravitySuiteNative)void window.antigravitySuiteNative.openPanel();
+        else window.location.href = "/?portal=1";
     });
 
     document.getElementById("ag-btn-restart").addEventListener("click", function() {
         if (!confirm("确定要重启当前 Antigravity 引擎吗？")) return;
         triggerSwitch(null, "重启核心引擎");
+    });
+    document.getElementById('ag-btn-exit-session').addEventListener('click',async()=>{
+        closeDrawer();mask.classList.add('active');
+        document.getElementById('ag-mask-title').textContent='正在退出当前配置…';
+        document.getElementById('ag-mask-desc').textContent='保存存档，清理当前登录，并打开未登录界面。';
+        try {
+            await suiteFetch('/__suite/api/sessions/exit',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+            let attempts=0;
+            const timer=setInterval(async()=>{
+                try {
+                    const data=await(await suiteFetch('/__suite/api/status')).json();
+                    if(data.exit_state?.phase==='ready'){clearInterval(timer);window.location.reload();}
+                    else if(data.exit_state?.phase==='error'){clearInterval(timer);mask.classList.remove('active');alert(data.exit_state.message);}
+                } catch {}
+                if(++attempts>90){clearInterval(timer);mask.classList.remove('active');alert('退出仍在进行，请返回配置面板查看状态。');}
+            },1000);
+        } catch(error){mask.classList.remove('active');alert(error.message);}
     });
 
     async function loadSuiteStatus() {
@@ -399,7 +427,7 @@
                         document.getElementById("ag-mask-desc").textContent = "启动已完成，点击下方按钮进入。";
                         const enter = document.createElement("button");
                         enter.className = "ag-btn ag-btn-primary"; enter.textContent = "进入";
-                        enter.onclick = () => window.location.href = "/";
+                        enter.onclick = () => window.location.reload();
                         mask.appendChild(enter);
                     }
                 } catch (e) {}

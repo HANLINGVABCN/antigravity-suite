@@ -42,6 +42,13 @@ class SuiteState:
         self.discovered=dict(binary=None,installations=[],configurations=[])
         self.discovery_task=None;self.discovery_running=False
         self.initial_import_pending=False;self.native_requires_restart=False;self.native_runtime_proxy_id=None
+        from login_sessions import LoginSessions
+        self.sessions=LoginSessions(self.data)
+        self.exit_task=None;self.exit_state=dict(phase='idle',message='')
+        self.login_environment_open=False
+        from native_control import NativeControl
+        from session_operations import SessionOperations
+        self.native_controls=NativeControl(self);self.session_ops=SessionOperations(self)
         from suite_updater import SuiteUpdater
         self.updater=SuiteUpdater(self)
     async def refresh_existing(self, import_logins=False):
@@ -56,6 +63,8 @@ class SuiteState:
                 self.cfg['antigravity_bin']=found['binary'];self.supervisor.antigravity_bin=found['binary']
                 if changed:self.persist()
             self.profiles.native_runtime.refresh_installations(found['configurations'])
+            for spec in self.profiles.native_runtime.installations:
+                if spec.get('available'):self.native_controls.publish(spec)
             if import_logins:self.initial_import_pending=True
             if self.initial_import_pending and not self.updater.busy():
                 imported=await asyncio.to_thread(self.profiles.import_installed_accounts_once,self.cfg.get('machine_name'))
@@ -86,30 +95,43 @@ class SuiteState:
 
     async def sync_native_login(self, force=False):
         if not self.discovery_enabled or self.updater.busy():return
-        observed=self.profiles.native_runtime.observe_login(force)
+        observed=self.profiles.native_runtime.observe_login(force,self.sessions.state.get('working'))
         if not observed:return
         native=observed['native'];token=observed['token']
         if not token:
             if self.active is not None or not self.cfg.get('native_logged_out'):
                 self.active=None;self.loaded=None;self.native_requires_restart=False
                 self.profiles.native_runtime.detach()
+                self.sessions.exited(native)
                 self.cfg['native_logged_out']=True;self.persist()
             return
-        profile=self.profiles.find_saved_account(token,self.active)
+        active=self.profiles.get_profile(self.active)
+        matches=bool(active and self.profiles.account_matches(active['id'],token))
+        pending=self.sessions.state.get('pending')
+        if pending and not pending.get('confirmed') and time.time()-pending['started_at']<=1800:return
+        event=self.sessions.new_login(token,self.active,matches)
+        profile=next((p for p in self.profiles.profiles if p.get('login_event_id')==event),None) if event else active
         created=False
         if not profile:
-            profile=self.profiles.create_profile(token['email'] or '账号 '+str(len(self.profiles.list_profiles())+1),
-                self.native_runtime_proxy_id or '',token['email'])
+            number=1+sum(p.get('email')==token['email'] for p in self.profiles.list_profiles())
+            name=(token['email'] or '账号')+' · 登录 '+str(number)
+            profile=self.profiles.create_profile(name,self.native_runtime_proxy_id or '',token['email'],identifier=event)
+            profile['login_event_id']=event
             profile['pending_native_import']=True;self.profiles._save()
             created=True
-        saved=self.profiles.saved_token_metadata(profile['id'])
-        needs_snapshot=created or not any(p['fingerprint']==token['fingerprint'] for p in saved)
+        needs_snapshot=created
         if needs_snapshot:
             try:await asyncio.to_thread(self.profiles.capture_installed_account,profile,native,token)
             except Exception:
                 if created:self.profiles.delete_profile(profile['id'])
                 raise
         if created:profile.pop('pending_native_import',None);self.profiles._save()
+        if not created and self.sessions.state.get('full')!=token.get('full_fingerprint'):
+            await asyncio.to_thread(self.profiles.renew_session_token,profile['id'],native,token)
+        if event:self.sessions.captured(event,profile['id'],token)
+        elif self.sessions.state.get('profile_id')!=profile['id'] or self.sessions.state.get('full')!=token.get('full_fingerprint'):
+            self.sessions.renewed(profile['id'],token)
+        if self.sessions.state.get('working')!=native:self.sessions.state['working']=native;self.sessions.save()
         common=self.profiles.native_runtime.binding
         changed=self.active!=profile['id'] or not common or common['profile_id']!=profile['id'] or self.cfg.get('native_logged_out')
         email_changed=bool(token['email'] and profile.get('email')!=token['email'])
@@ -122,12 +144,13 @@ class SuiteState:
         self.profiles.native_runtime.associate(profile['id'],native)
         self.bind_engine_home(profile['id'])
         self.active=profile['id'];self.loaded=profile['id'];self.cfg['native_logged_out']=False
+        self.login_environment_open=False;self.cfg['login_environment']=False
         if not running and hasattr(self.supervisor,'adopt_existing'):
             running=await asyncio.to_thread(self.supervisor.adopt_existing)
             if running:self.native_runtime_proxy_id=None
         self.native_requires_restart=running and (profile.get('proxy_id') or None)!=self.native_runtime_proxy_id
         self.persist()
-        if not self.native_requires_restart:self.request_detection(profile['id'])
+        if not self.native_requires_restart and not self.busy:self.request_detection(profile['id'])
     def prune_imports(self):
         now=time.time()
         for token,item in list(self.pending_imports.items()):
@@ -142,6 +165,7 @@ class SuiteState:
         return self.engine_proxy_url
     async def ensure_switch_allowed(self):
         if self.launch_task and not self.launch_task.done():raise ValueError('正在启动档案，请等待完成')
+        if self.exit_task and not self.exit_task.done():raise ValueError('正在退出配置，请稍后重试')
     def bind_engine_home(self, p_id):
         self.profiles.bind_home(p_id)
         p=self.profiles.get_profile(p_id)
@@ -149,6 +173,7 @@ class SuiteState:
         if native and hasattr(self.supervisor,'configure_native'):self.supervisor.configure_native(native)
         elif hasattr(self.supervisor,'set_home'):
             self.supervisor.set_home(self.profiles.home);self.supervisor.display=self.cfg['display_num']
+        if native:self.native_controls.publish(native)
     def persist(self):
         self.cfg['active_profile_id']=self.active
         atomic_json(self.data/'config.json',self.cfg)
@@ -158,12 +183,14 @@ class SuiteState:
         if not item: raise ValueError('绑定的代理不存在，请重新选择')
         return self.proxies.get_proxy_url(item)
     def request_start(self, target, restart=False):
+        if self.sessions.in_progress():raise ValueError('登录尚未结束，请完成或取消后再切换配置')
         target=self.profiles.native_runtime.resolve(target)
         if not self.profiles.get_profile(target): raise ValueError('档案不存在')
         if target==self.active and self.supervisor.active_port and not self.busy and not restart and not self.native_requires_restart: return
         if self.launch_task and not self.launch_task.done():
             if self.starting_profile_id==target: return
             raise ValueError('已有档案正在启动，请等待完成')
+        if self.exit_task and not self.exit_task.done():raise ValueError('正在退出配置，请稍后重试')
         if time.monotonic()-self.last_switch<4: raise ValueError('切换过于频繁，请等待几秒后重试')
         self.last_switch=time.monotonic()
         self.starting_profile_id=target
@@ -215,7 +242,11 @@ class SuiteState:
                     await asyncio.to_thread(self.supervisor.stop_antigravity)
                 # Stop any exact-matching orphan before changing runtime or proxy parameters.
                 await asyncio.to_thread(self.supervisor.stop_antigravity)
+                if not self.profiles.native_runtime.selected:
+                    self.profiles.native_runtime.selected=self.session_ops.runtime(create=True)
                 if self.cfg.get('shared_native_runtime',True):
+                    if not self.profiles.native_runtime.selected and self.sessions.state.get('working'):
+                        self.profiles.native_runtime.selected=self.sessions.state['working']
                     native=self.profiles.native_runtime.selected
                     if native and not self.profiles.native_runtime.spec_for(target):
                         original=ProcessSupervisor(self.cfg['antigravity_bin'],native['native_display'],runtime_home=native['native_home'])
@@ -226,10 +257,16 @@ class SuiteState:
                 self.bind_engine_home(target)
                 switched=True
                 self.loaded=target
+                current_native=self.profiles.native_runtime.spec_for(target)
+                token=self.profiles.installed_token(self.profiles.home/'.gemini/jetski-standalone-oauth-token')
+                self.sessions.restored(target,token)
+                self.sessions.state['working']=current_native;self.sessions.save()
+                await self.session_ops.ensure_desktop_guard()
                 proxy_url=await self.prepare_engine_proxy(p)
                 await asyncio.to_thread(self.supervisor.start_antigravity,proxy_url)
                 self.native_runtime_proxy_id=p.get('proxy_id') or None;self.native_requires_restart=False
                 self.cfg['native_logged_out']=False
+                self.cfg['login_environment']=False;self.login_environment_open=False
                 self.active=target; self.last_error=''; self.persist()
             except Exception as e:
                 self.last_error=str(e)
@@ -246,6 +283,8 @@ class SuiteState:
                             await asyncio.to_thread(self.supervisor.start_antigravity,self.engine_proxy_url)
                             self.native_runtime_proxy_id=old_profile.get('proxy_id') or None
                             self.native_requires_restart=False
+                            token=self.profiles.installed_token(self.profiles.home/'.gemini/jetski-standalone-oauth-token')
+                            self.sessions.restored(old,token)
                     except Exception: self.last_error+='；原档案恢复启动失败，请查看日志'
                 self.active=old; self.loaded=old_loaded; self.persist()
                 raise
@@ -256,13 +295,27 @@ class SuiteState:
         self.busy=True; self.supervisor.is_restarting=True
         try:
             await asyncio.to_thread(self.supervisor.stop_antigravity)
-            if self.loaded==self.active and self.profiles.get_profile(self.active):
+            if self.loaded==self.active and self.profiles.get_profile(self.active) and not self.sessions.in_progress():
                 await asyncio.to_thread(self.profiles.save_active_to_profile,self.active)
         finally:
             self.busy=False; self.supervisor.is_restarting=False
+
+    def request_exit(self):
+        if self.sessions.in_progress():raise ValueError('登录尚未结束，请完成或取消后再退出配置')
+        if self.exit_task and not self.exit_task.done():return self.exit_state
+        if self.launch_task and not self.launch_task.done():raise ValueError('正在启动配置，请稍后退出')
+        if self.installer.task and not self.installer.task.done():raise ValueError('本体操作尚未完成')
+        self.exit_state=dict(phase='queued',message='正在退出当前配置')
+        async def run():
+            try:await self.session_ops.exit()
+            except Exception:
+                self.exit_state.update(phase='error',message='可能是登录缓存、运行环境或原生保护不兼容，退出未完成；存档保留。')
+        self.exit_task=asyncio.create_task(run())
+        return self.exit_state
     def status(self):
         p=self.profiles.get_profile(self.active)
         px=self.proxies.get_proxy(p.get('proxy_id')) if p and p.get('proxy_id') else None
+        if not p and self.login_environment_open and self.native_runtime_proxy_id:px=self.proxies.get_proxy(self.native_runtime_proxy_id)
         if px: px={k:v for k,v in px.items() if k!='password'}
         port=None if self.busy or self.starting_profile_id or self.native_requires_restart else self.supervisor.active_port
         return dict(active_profile=p,active_profile_id=self.active,active_proxy=px,
@@ -273,6 +326,9 @@ class SuiteState:
                     history=self.profiles.history.summary(),
                     common_runtime=self.profiles.native_runtime.status(),suite_version=(SUITE_DIR/'VERSION').read_text().strip(),
                     native_session=dict(state='logged_out' if self.cfg.get('native_logged_out') else 'logged_in' if p else 'unknown'),
+                    login_sessions=self.sessions.status(),exit_state=self.exit_state,
+                    login_environment_ready=self.login_environment_open and bool(port),
+                    logout_protection=self.session_ops.desktop_status,
                     profiles=self.profiles.list_profiles(),proxies=[{k:v for k,v in p.items() if k!='password'} for p in self.proxies.list_proxies()],system=system_memory())
 
 def system_memory():
@@ -305,7 +361,7 @@ def secure_cookie(request,cfg):
 @web.middleware
 async def guard(request,handler):
     s=request.app['state']
-    public=request.path in ('/__suite/api/login','/__suite/api/auth/google/callback')
+    public=request.path in ('/__suite/api/login','/__suite/api/auth/google/callback','/__suite/native/control')
     authenticated=valid_session(request.cookies.get('ag_session'),s.cfg)
     if not public and not authenticated:
         if request.path=='/' and request.method=='GET': return web.FileResponse(s.static/'login.html',headers={'Cache-Control':'no-store'})
@@ -376,6 +432,15 @@ async def api(request):
     if path=='logout' and method=='POST':
         response=ok(); response.del_cookie('ag_session',path='/'); return response
     if path=='status' and method=='GET': return web.json_response(s.status())
+    if path=='sessions/login-begin' and method=='POST':
+        async with s.lock:
+            await s.ensure_switch_allowed()
+            return ok(intent_id=s.session_ops.begin())
+    if path=='sessions/login-complete' and method=='POST':
+        async with s.lock:
+            profile_id=await s.session_ops.complete(d.get('intent_id',''),d.get('valid_auth',False))
+            return ok(profile_id=profile_id)
+    if path=='sessions/exit' and method=='POST':return web.json_response(dict(ok=True,state=s.request_exit()),status=202)
     if path=='system/update/status' and method=='GET': return ok(**s.updater.status())
     if path=='system/update/check' and method=='POST':
         if s.updater.busy():return ok(**s.updater.status())
@@ -662,6 +727,41 @@ async def save_profile_upload(request,file,max_bytes=64*1024*1024):
 
 async def page(request):
     s=request.app['state']
+    if request.path=='/__suite/native/control':
+        if request.method!='POST' or request.content_type!='application/json':raise web.HTTPBadRequest()
+        data=await request.json()
+        if not isinstance(data,dict):raise web.HTTPBadRequest()
+        spec=s.native_controls.authorize(request,data)
+        if not spec:raise web.HTTPForbidden()
+        if s.updater.busy():return web.json_response(dict(ok=False,error='项目正在更新'),status=409)
+        operation=data.get('operation');fields=data.get('fields',{})
+        if not isinstance(fields,dict):raise web.HTTPBadRequest()
+        if operation=='status':return web.json_response(dict(ok=True,**s.native_controls.minimal_status()))
+        if operation=='ready':
+            current=s.session_ops.runtime()
+            if not current or current.get('id')!=spec['id']:raise web.HTTPForbidden()
+            s.session_ops.desktop_status['renderer_ready']=True
+            return web.json_response(dict(ok=True))
+        current=s.session_ops.runtime()
+        if current and current.get('id')!=spec['id']:return web.json_response(dict(ok=False,error='此窗口不是当前配置的运行环境，请返回配置面板'),status=409)
+        if operation=='auth-status':
+            from auth_probe import auth_status
+            return web.json_response(dict(ok=True,**(await auth_status(s))))
+        if operation=='begin':
+            async with s.lock:
+                await s.ensure_switch_allowed()
+                return web.json_response(dict(ok=True,intent_id=s.session_ops.begin(spec,'native')))
+        if operation=='complete':
+            async with s.lock:
+                identifier=await s.session_ops.complete(fields.get('intent_id',''),fields.get('valid_auth',False))
+                return web.json_response(dict(ok=True,profile_id=identifier))
+        if operation=='exit':return web.json_response(dict(ok=True,state=s.request_exit()),status=202)
+        if operation=='switch':
+            identifier=fields.get('profile_id')
+            if not any(p['id']==identifier for p in s.profiles.list_profiles()):raise web.HTTPBadRequest()
+            s.request_start(identifier);return web.json_response(dict(ok=True),status=202)
+        if operation=='restart':s.request_start(s.active,restart=True);return web.json_response(dict(ok=True),status=202)
+        raise web.HTTPBadRequest()
     if request.path=='/__suite/floating.js': return web.FileResponse(s.static/'floating.js')
     if request.path=='/__suite/privacy.js': return web.FileResponse(s.static/'privacy.js')
     if request.path=='/__suite/proxy-editor.js': return web.FileResponse(s.static/'proxy-editor.js')
@@ -669,11 +769,12 @@ async def page(request):
     if request.path=='/__suite/portal-ui.js': return web.FileResponse(s.static/'portal-ui.js')
     if request.path=='/__suite/portal.js': return web.FileResponse(s.static/'portal.js')
     if request.path=='/__suite/update.js': return web.FileResponse(s.static/'update.js')
+    if request.path=='/__suite/logout-guard.js': return web.FileResponse(s.static/'logout-guard.js')
     if request.path=='/__suite/portal.css': return web.FileResponse(s.static/'portal.css')
     if request.path=='/__suite/portal' or (request.path=='/' and 'portal' in request.query):
         return web.FileResponse(s.static/'portal.html',headers={'Cache-Control':'no-store'})
     if request.path.startswith('/__suite/'): raise web.HTTPNotFound()
-    if s.native_requires_restart or s.cfg.get('native_logged_out'):
+    if s.native_requires_restart or (s.cfg.get('native_logged_out') and not s.login_environment_open):
         if request.method in ('GET','HEAD'):raise web.HTTPFound('/?portal=1')
         return web.json_response(dict(ok=False,error='当前原生会话未登录，或需要按该配置的代理重新启动，请在配置页面选择账号'),status=409)
     return await proxy(request)
@@ -685,16 +786,19 @@ async def resources(app):
     boot=None
     if s.discovery_enabled:
         await s.refresh_existing(import_logins=True)
+        if not s.updater.busy():await s.session_ops.protect_existing()
         s.discovery_running=True
         async def scan_existing():
             while s.discovery_running:
-                await asyncio.sleep(5)
+                await asyncio.sleep(3)
                 if s.busy or s.starting_profile_id or (s.installer.task and not s.installer.task.done()):continue
                 try:await s.refresh_existing()
                 except Exception:logging.error('已有反重力配置扫描失败，请检查目录权限')
         s.discovery_task=asyncio.create_task(scan_existing())
     async def autoboot():
         try:
+            if s.cfg.get('login_environment') and s.sessions.state.get('waiting'):
+                await s.session_ops.start_empty(s.session_ops.runtime(create=True));return
             if s.cfg.get('native_logged_out'):return
             target=s.cfg.get('default_profile_id')
             common=s.profiles.native_runtime
@@ -702,6 +806,7 @@ async def resources(app):
             if target and (not s.supervisor.active_port or migrate):s.request_start(target,restart=migrate)
         except Exception as e: s.last_error=str(e); logging.error('默认档案启动失败：%s',e)
     if s.cfg.get('default_profile_id'): boot=asyncio.create_task(autoboot())
+    elif s.cfg.get('login_environment'):boot=asyncio.create_task(autoboot())
     yield
     s.discovery_running=False
     if s.discovery_task:
@@ -709,6 +814,7 @@ async def resources(app):
     if boot and not boot.done():
         await boot
     if s.launch_task and not s.launch_task.done(): await s.launch_task
+    if s.exit_task and not s.exit_task.done():await s.exit_task
     for task in s.detection_tasks.values():
         if not task.done(): task.cancel()
     await asyncio.gather(*s.detection_tasks.values(),return_exceptions=True)

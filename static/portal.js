@@ -48,15 +48,32 @@ let currentStatus = null;
         }
         function showSummary() {
             const notice = document.getElementById("google-auth-notice");
+            const protection=currentStatus?.logout_protection;
+            const guardStatus=document.getElementById('logout-guard-status');
+            guardStatus.textContent=protection?.renderer_ready?'桌面退出保护已验证。每次重新登录单独存档，退出请用“退出配置”。':
+                protection?.installed?'桌面退出保护已安装，等待客户端验证。退出请用“退出配置”。':(protection?.reason||'正在检查桌面退出保护');
+            const phase=currentStatus?.exit_state?.phase;
+            const exiting=['queued','saving','opening'].includes(phase);
+            const exitButton=document.getElementById('btn-exit-session');
+            exitButton.disabled=exiting || !currentStatus?.active_profile;
+            exitButton.textContent=exiting?'正在退出…':'退出配置';
+            if(exiting || phase==='error') {
+                notice.className='summary '+(phase==='error'?'abnormal':'pending');
+                notice.textContent=currentStatus.exit_state.message;return;
+            }
             if (currentStatus?.native_session?.state === 'logged_out') {
                 notice.className = 'summary pending';
                 notice.textContent = '反重力当前未登录。已保存的账号配置仍保留，可以选择配置重新启动，或在反重力中登录另一个账号。';
+                if(currentStatus.login_environment_ready) {
+                    const enter=document.createElement('button');enter.className='btn btn-primary';enter.textContent='进入登录界面';
+                    enter.onclick=()=>location.href='/';notice.append(' ',enter);
+                }
                 return;
             }
             const result = currentStatus?.diagnostics?.[currentStatus.active_profile?.id];
             notice.className = 'summary ' + (result?.status || 'pending');
             notice.textContent = result ? ((result.status === 'abnormal' ? '异常：' : '') + result.reason) :
-                '隐私保护已启用：IDE 网页禁止外部直连，档案使用独立运行目录。点击档案的“检测”检查账号状态。';
+                '隐私保护已启用：IDE 网页禁止外部直连，登录存档各自保留，聊天记录共享。点击档案的“检测”检查账号状态。';
         }
         async function detectProfile(id) {
             await fetch("/__suite/api/profiles/detect", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({profile_id:id})});
@@ -84,6 +101,10 @@ let currentStatus = null;
         async function stopEngine() {
             if (!confirm("停止当前 IDE 并保存档案？")) return;
             await fetch("/__suite/api/system/stop", {method:"POST"});
+            await fetchStatus();
+        }
+        async function exitCurrentSession() {
+            await fetch('/__suite/api/sessions/exit',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
             await fetchStatus();
         }
         async function editProfileFile(id, path) {

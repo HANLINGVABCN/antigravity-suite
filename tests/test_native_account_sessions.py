@@ -58,17 +58,18 @@ def test_login_b_creates_its_own_card_and_never_overwrites_a(tmp_path):
     asyncio.run(scenario())
 
 
-def test_an_existing_b_is_reused_and_does_not_take_as_identity(tmp_path):
+def test_existing_b_login_creates_a_new_session_and_preserves_b_identity(tmp_path):
     async def scenario():
         state,a,home=setup(tmp_path);manager=state.profiles
         b=manager.create_profile('B自定义名称','node-B','b@example.invalid')
         atomic_json(manager.profile_dir(b['id'])/'store/jetski-standalone-oauth-token',dict(token=dict(refresh_token='old-B'),id_token_email='b@example.invalid'))
+        original=copy.deepcopy(b);store=manager.profile_dir(b['id'])/'store/jetski-standalone-oauth-token';saved=store.read_bytes()
         atomic_json(home/'.gemini/jetski-standalone-oauth-token',dict(token=dict(refresh_token='refreshed-B'),id_token_email='b@example.invalid'))
         await state.sync_native_login(force=True)
-        assert state.active==b['id'] and len(manager.list_profiles())==2
+        assert state.active not in (a['id'],b['id']) and len(manager.list_profiles())==3
+        assert b==original and store.read_bytes()==saved
         assert b['name']=='B自定义名称' and b['proxy_id']=='node-B' and a['email']=='a@example.invalid'
-        assert state.native_requires_restart
-        assert not state.status()['antigravity_ready']
+        assert manager.get_profile(state.active)['proxy_id']=='node-A'
     asyncio.run(scenario())
 
 
