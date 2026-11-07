@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0 — 2026-11-07
+
+- 新增三种导入入口：本工具配置包、CPA Antigravity JSON、Sub2API 账号数据 JSON；支持选择文件或粘贴第三方 JSON。
+- CPA/Sub2API 仅转换账号登录凭据，所有第三方代理数据均忽略，节点由用户自行配置。
+- 新增 CPA 和 Sub2API 格式导出，保留账号凭据及已知项目字段，不导出代理、聊天记录或模型调度设置。
+- 处理 CPA 的 expired/timestamp 和 Sub2API 的 expires_at，过滤其他服务及已停用账号，保留真实过期状态并安排导入后自动检测。
+- 导入前完整验证并在写入失败时回滚，既有配置 ID、代理绑定和共享聊天库不变。
+- 增加格式及往返回归测试、兼容范围说明和中文发布说明。
+
 ## 0.4.0 — 2026-11-07
 
 - Added optional authenticator-app two-factor login, configured entirely in the web service settings.

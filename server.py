@@ -320,6 +320,8 @@ async def api(request):
                 runtime_file.write_text(content,encoding='utf-8');os.chmod(runtime_file,0o600)
         return ok()
     if path=='profiles/import/preview' and method=='POST':
+        source=request.query.get('source','suite')
+        if source not in ('suite','cpa','sub2api'):raise ValueError('不支持的导入来源')
         async with s.lock:
             s.prune_imports()
             if len(s.pending_imports)>=16:raise ValueError('待导入文件过多，请完成已有导入后重试')
@@ -327,10 +329,13 @@ async def api(request):
             fd,name=tempfile.mkstemp(dir=temporary,prefix='profile-',suffix='.tar.gz');os.close(fd)
             file=Path(name)
             try:
-                await save_profile_upload(request,file)
-                info=await asyncio.to_thread(s.profiles.inspect_import,file)
+                await save_profile_upload(request,file,max_bytes=4*1024*1024 if source!='suite' else 64*1024*1024)
+                if source=='suite':info=await asyncio.to_thread(s.profiles.inspect_import,file)
+                else:
+                    from external_import import preview_external
+                    info=await asyncio.to_thread(preview_external,file,source)
                 token=secrets.token_urlsafe(32)
-                s.pending_imports[token]=dict(path=str(file),session=request.cookies.get('ag_session'),expires_at=time.time()+600,has_proxy=info['has_proxy'])
+                s.pending_imports[token]=dict(path=str(file),source=source,session=request.cookies.get('ag_session'),expires_at=time.time()+600,has_proxy=info['has_proxy'])
             except Exception:
                 file.unlink(missing_ok=True);raise
         return ok(import_token=token,**info)
@@ -341,9 +346,20 @@ async def api(request):
             s.prune_imports()
             token=d.get('import_token');item=s.pending_imports.get(token)
             if not item or item['session']!=request.cookies.get('ag_session'):raise ValueError('导入预览已失效，请重新选择文件')
-            p=await asyncio.to_thread(s.profiles.import_profile,Path(item['path']),s.proxies,include_proxy and item['has_proxy'])
+            source=item.get('source','suite')
+            imported={}
+            if source=='suite':
+                p=await asyncio.to_thread(s.profiles.import_profile,Path(item['path']),s.proxies,include_proxy and item['has_proxy'])
+                imported=dict(profiles=[p],imported_count=1,proxy_imported=bool(include_proxy and item['has_proxy']))
+            else:
+                from external_import import import_external
+                imported=await asyncio.to_thread(import_external,Path(item['path']),source,s.profiles)
+                p=imported.pop('profile')
             s.pending_imports.pop(token,None);Path(item['path']).unlink(missing_ok=True)
-        return ok(profile=p,has_proxy=item['has_proxy'],proxy_imported=bool(include_proxy and item['has_proxy']),proxy_message='对应代理已导入' if include_proxy and item['has_proxy'] else '未导入对应代理' if item['has_proxy'] else '无代理文件')
+        if source!='suite':
+            for profile in imported['profiles']:s.request_detection(profile['id'])
+        message='代理由你自己配置' if source!='suite' else '对应代理已导入' if imported['proxy_imported'] else '未导入对应代理' if item['has_proxy'] else '无代理文件'
+        return ok(profile=p,has_proxy=item['has_proxy'],source=source,proxy_message=message,**imported)
     if path=='profiles/import/cancel' and method=='POST':
         async with s.lock:
             token=d.get('import_token');item=s.pending_imports.get(token)
@@ -359,21 +375,31 @@ async def api(request):
         return ok(profile=p)
     if path=='profiles/export' and method=='GET':
         p_id=request.query.get('id'); s.profiles.profile_dir(p_id)
+        format=request.query.get('format','suite')
+        if format not in ('suite','cpa','sub2api'):raise ValueError('不支持的导出格式')
         async with s.lock:
-            include_proxy=request.query.get('include_proxy')=='1'
+            await s.ensure_switch_allowed()
+            include_proxy=format=='suite' and request.query.get('include_proxy')=='1'
             profile=s.profiles.get_profile(p_id)
             node=s.proxies.get_proxy(profile.get('proxy_id')) if include_proxy and profile.get('proxy_id') else None
             if include_proxy and not node:raise ValueError('此配置没有可导出的对应代理')
             restart=p_id==s.active and bool(s.supervisor.active_port)
             if p_id==s.active: await s.stop_and_save()
             try:
-                with tempfile.TemporaryDirectory() as tmp:
-                    file=Path(tmp)/'profile.tar.gz'
-                    await asyncio.to_thread(s.profiles.export_profile,p_id,file,node)
-                    data=await asyncio.to_thread(file.read_bytes)
+                if format!='suite':
+                    from external_import import export_external
+                    exported=await asyncio.to_thread(export_external,s.profiles,p_id,format)
+                    data=json.dumps(exported,ensure_ascii=False,indent=2).encode('utf-8')
+                else:
+                    with tempfile.TemporaryDirectory() as tmp:
+                        file=Path(tmp)/'profile.tar.gz'
+                        await asyncio.to_thread(s.profiles.export_profile,p_id,file,node)
+                        data=await asyncio.to_thread(file.read_bytes)
             finally:
                 if restart: await asyncio.to_thread(s.supervisor.start_antigravity,s.engine_proxy_url)
-        return web.Response(body=data,content_type='application/gzip',headers={'Content-Disposition':'attachment; filename="profile_%s.tar.gz"'%p_id})
+        suffix='tar.gz' if format=='suite' else 'json'
+        content_type='application/gzip' if format=='suite' else 'application/json'
+        return web.Response(body=data,content_type=content_type,headers={'Content-Disposition':'attachment; filename="%s_%s.%s"'%(format,p_id,suffix),'Cache-Control':'no-store'})
     if path=='proxies':
         if method=='GET': return web.json_response([{k:v for k,v in p.items() if k!='password'} for p in s.proxies.list_proxies()])
         if method=='POST':
@@ -471,7 +497,7 @@ async def api(request):
         return await google_api(request,s,path,d)
     raise web.HTTPNotFound()
 
-async def save_profile_upload(request,file):
+async def save_profile_upload(request,file,max_bytes=64*1024*1024):
     if request.content_type!='multipart/form-data':raise ValueError('请上传配置压缩包')
     reader=await request.multipart();field=await reader.next()
     if not field or field.name!='file':raise ValueError('请上传 file 字段')
@@ -482,7 +508,7 @@ async def save_profile_upload(request,file):
             chunk=await field.read_chunk()
             if not chunk:break
             size+=len(chunk)
-            if size>64*1024*1024:raise ValueError('上传包不能超过 64MB')
+            if size>max_bytes:raise ValueError('上传文件超过 %dMB 限制'%(max_bytes//1024//1024))
             output.write(chunk)
     if not size:raise ValueError('上传文件为空')
 

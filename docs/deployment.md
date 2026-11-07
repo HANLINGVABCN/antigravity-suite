@@ -125,3 +125,8 @@ journalctl -u antigravity-suite-improved -f
 ## 可选的验证器两步验证
 
 在网页“服务设置”中可以自行绑定、开启和关闭验证器。初始状态关闭，升级保留原设置。开启流程、恢复码和手机丢失处理见 [验证器说明](authenticator.md)。
+
+
+## CPA / Sub2API 账号文件
+
+导入和导出现在都提供三个格式入口。CPA/Sub2API 只转换 Antigravity 账号凭据，忽略第三方代理；本工具原生配置包仍提供可选代理导入导出。完整字段、过滤及兼容限制见 [格式兼容说明](transfer-formats.md)。

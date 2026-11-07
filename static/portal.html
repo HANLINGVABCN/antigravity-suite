@@ -270,7 +270,7 @@
                 <div style="display:flex; gap:8px;">
                     <button class="btn btn-primary" onclick="openOAuthModal()">+ 登录 Google 账号</button>
                     <button class="btn btn-secondary" onclick="openCreateModal()">+ 空配置</button>
-                    <button class="btn btn-secondary" onclick="document.getElementById('import-file-input').click()">📥 导入</button>
+                    <button class="btn btn-secondary" onclick="openImportSources()">📥 导入</button>
                     <input type="file" id="import-file-input" style="display:none;" onchange="handleImport(event)" accept=".gz,.tar,.agp">
                 </div>
             </div>
@@ -509,17 +509,48 @@
     <div class="modal-mask" id="modal-export-profile"><div class="modal-box">
         <div class="modal-title">导出配置文件</div>
         <p id="export-profile-name" style="margin-bottom:12px;"></p>
-        <label id="export-proxy-option" style="font-size:14px;"><input type="checkbox" id="export-include-proxy"> 导出对应代理</label>
-        <p id="export-proxy-detail" style="font-size:12px;color:var(--text-sub);margin-top:8px;"></p>
-        <p style="font-size:12px;color:var(--text-sub);margin-top:12px;">导出包包含账号凭据和聊天记录；附带代理时也会包含节点密码，请私有保管。</p>
+        <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:16px;">
+            <button class="btn btn-secondary" id="export-format-suite" onclick="chooseExportFormat('suite')">导出为本工具格式</button>
+            <button class="btn btn-secondary" id="export-format-cpa" onclick="chooseExportFormat('cpa')">导出为 CPA 格式</button>
+            <button class="btn btn-secondary" id="export-format-sub2api" onclick="chooseExportFormat('sub2api')">导出为 Sub2API 格式</button>
+        </div>
+        <div id="export-native-proxy">
+            <label id="export-proxy-option" style="font-size:14px;"><input type="checkbox" id="export-include-proxy"> 导出对应代理</label>
+            <p id="export-proxy-detail" style="font-size:12px;color:var(--text-sub);margin-top:8px;"></p>
+        </div>
+        <p id="export-format-description" style="font-size:13px;color:var(--text-sub);margin-top:10px;"></p>
+        <p id="export-private-warning" style="font-size:12px;color:var(--text-sub);margin-top:12px;">导出文件包含账号凭据，请私有保管。</p>
         <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:20px;">
             <button class="btn btn-secondary" onclick="closeModals()">取消</button>
             <button class="btn btn-primary" id="export-profile-button" onclick="downloadProfile()">导出</button>
         </div>
     </div></div>
+    <div class="modal-mask" id="modal-import-sources"><div class="modal-box">
+        <div class="modal-title">选择导入来源</div>
+        <div style="display:flex;flex-direction:column;gap:12px;">
+            <button class="btn btn-secondary" onclick="chooseImportSource('suite')">从本工具导入</button>
+            <button class="btn btn-secondary" onclick="chooseImportSource('cpa')">从 CPA 导入</button>
+            <button class="btn btn-secondary" onclick="chooseImportSource('sub2api')">从 Sub2API 导入</button>
+        </div>
+        <p style="font-size:12px;color:var(--text-sub);margin-top:14px;">CPA / Sub2API 仅支持 Antigravity 账号，不支持把 Claude、Codex 或 API 密钥当作反重力登录。</p>
+        <div style="display:flex;justify-content:flex-end;margin-top:16px;"><button class="btn btn-secondary" onclick="closeModals()">取消</button></div>
+    </div></div>
+    <div class="modal-mask" id="modal-external-import"><div class="modal-box">
+        <div class="modal-title" id="external-import-title">从 CPA 导入</div>
+        <p id="external-import-help" style="font-size:13px;color:var(--text-sub);margin-bottom:12px;"></p>
+        <button class="btn btn-secondary" onclick="document.getElementById('import-file-input').click()">选择 JSON 文件</button>
+        <div class="form-group" style="margin-top:16px;"><label for="external-import-json">也可以粘贴导出的 JSON（包含凭据，请勿公开分享）</label>
+            <textarea class="form-control" id="external-import-json" rows="7" placeholder="粘贴完整 JSON 内容"></textarea></div>
+        <p style="font-size:12px;color:var(--text-sub);">只转换账号凭据到本工具的配置；代理由你自己配，不导入、不绑定第三方代理。导入后自动检测，文件格式正确不代表账号已通过 Google 验证。</p>
+        <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:16px;">
+            <button class="btn btn-secondary" onclick="closeModals()">取消</button>
+            <button class="btn btn-primary" id="external-json-button" onclick="importPastedJson()">导入 JSON</button>
+        </div>
+    </div></div>
     <div class="modal-mask" id="modal-import-profile"><div class="modal-box">
         <div class="modal-title">导入配置文件</div>
         <p id="import-profile-name" style="margin-bottom:12px;"></p>
+        <p id="import-profile-warnings" style="font-size:12px;color:#fbbf24;white-space:pre-line;margin-bottom:12px;"></p>
         <label style="font-size:14px;"><input type="checkbox" id="import-include-proxy"> 导入对应代理</label>
         <p id="import-proxy-detail" style="font-size:12px;color:var(--text-sub);margin-top:8px;"></p>
         <p style="font-size:12px;color:var(--text-sub);margin-top:12px;">勾选后导入节点并自动绑定。不会覆盖已有的不同节点；不勾选则只导入配置。</p>
@@ -539,7 +570,9 @@
         let currentEditingProxyId = null;
         let originalProxyLink = "";
         let exportProfileId = null;
+        let selectedExportFormat = 'suite';
         let pendingProfileImport = null;
+        let selectedImportSource = 'suite';
         let transferStatusTimer = null;
 
         let settingsOriginalUser = "";
@@ -844,6 +877,7 @@
             document.getElementById("settings-current").value = "";
             document.getElementById("settings-new").value = "";
             document.getElementById("mfa-current-code").value = "";
+            document.getElementById("external-import-json").value = "";
             document.querySelectorAll(".modal-mask").forEach(m => m.classList.remove("active"));
             currentEditingProxyId = null;
             originalProxyLink = "";
@@ -1123,7 +1157,21 @@
             document.getElementById("export-proxy-option").style.display = proxy ? "block" : "none";
             document.getElementById("export-include-proxy").checked = Boolean(proxy);
             document.getElementById("export-proxy-detail").textContent = proxy ? proxy.name + " · " + proxy.protocol + "://" + proxy.host + ":" + proxy.port : "无对应代理";
+            chooseExportFormat('suite');
             document.getElementById("modal-export-profile").classList.add("active");
+        }
+        function chooseExportFormat(format) {
+            selectedExportFormat = format;
+            for (const name of ['suite','cpa','sub2api']) {
+                document.getElementById('export-format-' + name).className = name === format ? 'btn btn-primary' : 'btn btn-secondary';
+            }
+            document.getElementById('export-native-proxy').style.display = format === 'suite' ? 'block' : 'none';
+            document.getElementById('export-format-description').textContent = format === 'suite' ?
+                '本工具压缩包：包含配置和共享聊天记录，可选择附带对应代理。' :
+                (format === 'cpa' ? 'CPA 账号 JSON' : 'Sub2API 账号数据 JSON') + '：只导出 Antigravity 登录凭据，不含代理和聊天记录。';
+            document.getElementById('export-private-warning').textContent = format === 'suite' ?
+                '导出包包含账号凭据和聊天记录；附带代理时也会包含节点密码，请私有保管。' :
+                'JSON 含账号登录凭据，不含代理和聊天记录，请私有保管。';
         }
         async function downloadProfile() {
             if (!exportProfileId) return;
@@ -1131,34 +1179,63 @@
             button.disabled = true; button.textContent = "导出中…";
             try {
                 const id = exportProfileId;
-                const includeProxy = document.getElementById("export-include-proxy").checked;
-                const response = await fetch("/__suite/api/profiles/export?id=" + encodeURIComponent(id) + "&include_proxy=" + (includeProxy ? "1" : "0"));
+                const format = selectedExportFormat;
+                const includeProxy = format === 'suite' && document.getElementById("export-include-proxy").checked;
+                const response = await fetch("/__suite/api/profiles/export?id=" + encodeURIComponent(id) + "&format=" + format + "&include_proxy=" + (includeProxy ? "1" : "0"));
                 const url = URL.createObjectURL(await response.blob());
-                const link = document.createElement("a"); link.href = url; link.download = "profile_" + id + ".tar.gz";
+                const link = document.createElement("a"); link.href = url; link.download = format + "_" + id + (format === 'suite' ? '.tar.gz' : '.json');
                 document.body.appendChild(link); link.click(); link.remove();
                 setTimeout(() => URL.revokeObjectURL(url), 30000);
-                closeModals(); showTransferStatus(includeProxy ? "配置已导出，包含对应代理" : "配置已导出，不包含代理文件");
+                closeModals(); showTransferStatus(format !== 'suite' ? '账号已导出为 ' + (format === 'cpa' ? 'CPA' : 'Sub2API') + ' 格式，不含代理。' : includeProxy ? "配置已导出，包含对应代理" : "配置已导出，不包含代理文件");
             } catch (error) { alert(error.message); }
             finally { button.disabled = false; button.textContent = "导出"; }
+        }
+        function openImportSources() {
+            document.getElementById("modal-import-sources").classList.add("active");
+        }
+        function chooseImportSource(source) {
+            selectedImportSource = source;
+            document.getElementById("modal-import-sources").classList.remove("active");
+            document.getElementById("import-file-input").accept = source === 'suite' ? '.gz,.tar,.agp' : '.json,application/json';
+            if (source === 'suite') { document.getElementById("import-file-input").click(); return; }
+            document.getElementById("external-import-title").textContent = source === 'cpa' ? '从 CPA 导入' : '从 Sub2API 导入';
+            document.getElementById("external-import-help").textContent = source === 'cpa' ?
+                '选择 CPA 导出的 Antigravity 账号 JSON（type 为 antigravity）。支持单个账号或账号数组，过期凭据会在启动检测时尝试续期。' :
+                '选择 Sub2API 导出的账号数据 JSON（包含 accounts）。只导入其中 Antigravity OAuth 账号；代理信息忽略，导入后由你自己配。';
+            document.getElementById("external-import-json").value = "";
+            document.getElementById("modal-external-import").classList.add("active");
+        }
+        async function importPastedJson() {
+            const value = document.getElementById("external-import-json").value.trim();
+            if (!value) { alert('请粘贴导出的 JSON'); return; }
+            const button = document.getElementById("external-json-button");button.disabled = true;
+            try { await previewImportFile(new File([value], selectedImportSource + '.json', {type:'application/json'}), selectedImportSource); }
+            finally { button.disabled = false; }
         }
         async function handleImport(event) {
             const file = event.target.files[0];
             if (!file) return;
             event.target.value = "";
+            await previewImportFile(file, selectedImportSource);
+        }
+        async function previewImportFile(file, source) {
             try {
                 if (pendingProfileImport) await cancelProfileImport();
                 const form = new FormData(); form.append("file", file);
                 showTransferStatus("正在检查配置包…");
-                const preview = await (await fetch("/__suite/api/profiles/import/preview", {method:"POST",body:form})).json();
+                const preview = await (await fetch("/__suite/api/profiles/import/preview?source=" + encodeURIComponent(source), {method:"POST",body:form})).json();
                 pendingProfileImport = preview;
+                document.getElementById("external-import-json").value = "";
+                document.getElementById("modal-external-import").classList.remove("active");
                 if (!preview.has_proxy) {
-                    showTransferStatus("无代理文件");
+                    showTransferStatus(source === 'suite' ? "无代理文件" : "正在转换账号，代理由你自己配置");
                     await finishProfileImport(false);
                     return;
                 }
                 document.getElementById("import-profile-name").textContent = preview.name;
+                document.getElementById("import-profile-warnings").textContent = (preview.warnings || []).join('\n');
                 document.getElementById("import-include-proxy").checked = true;
-                document.getElementById("import-proxy-detail").textContent = preview.proxy.name + " · " + preview.proxy.protocol + "://" + preview.proxy.host + ":" + preview.proxy.port;
+                document.getElementById("import-proxy-detail").textContent = (preview.proxy_count > 1 ? '有 ' + preview.proxy_count + ' 个账号附带代理，选择后逐一绑定。示例：' : '') + preview.proxy.name + " · " + preview.proxy.protocol + "://" + preview.proxy.host + ":" + preview.proxy.port;
                 document.getElementById("modal-import-profile").classList.add("active");
                 showTransferStatus("配置包包含对应代理，请选择是否导入");
             } catch (error) { alert(error.message); }
@@ -1169,7 +1246,8 @@
                 body:JSON.stringify({import_token:pendingProfileImport.import_token,include_proxy:includeProxy})})).json();
             pendingProfileImport = null;
             closeModals(); await fetchStatus();
-            showTransferStatus(result.proxy_message + "。配置已导入");
+            const count = result.imported_count || 1;
+            showTransferStatus(result.proxy_message + "。已导入 " + count + " 个配置" + (result.warnings ? '，已安排自动检测；详细结果见各配置卡片。' : ''));
         }
         async function confirmProfileImport() {
             const button = document.getElementById("import-profile-button");
