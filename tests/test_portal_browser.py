@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 
 import pytest
+from aiohttp import web
 
 pw = pytest.importorskip('playwright.sync_api', reason='Install requirements-browser.txt for real browser checks')
 
@@ -27,6 +28,12 @@ def chromium():
 def portal(tmp_path, chromium):
     cfg = config(tmp_path)
     app = create_app(cfg, supervisor=FakeSupervisor())
+    @web.middleware
+    async def delayed_node_details(request, handler):
+        if request.path=='/__suite/api/proxies/detail':
+            await asyncio.sleep(.15)
+        return await handler(request)
+    app.middlewares.insert(0, delayed_node_details)
     state = app['state']
     node = state.proxies.add_proxy('节点旧名称 #1', 'socks5h', '2001:db8::1', 1080, 'a@b', 'dummy-password:@ /')
     profile = state.profiles.create_profile('测试账号 · ' + '较长名称和备注' * 5, node['id'])
@@ -130,6 +137,9 @@ def test_prefilled_node_rename_survives_polling_and_real_conflicts_stay_unsaved(
     page=portal['page']
     node=portal['node'];profile=portal['profile']
     page.locator('#proxy-container button:has-text("详情与编辑")').click()
+    pw.expect(page.locator('#modal-proxy')).to_be_visible()
+    pw.expect(page.locator('#proxy-id')).to_have_value(node['id'])
+    pw.expect(page.locator('#proxy-links')).not_to_have_value('')
     link=page.locator('#proxy-links').input_value()
     assert 'dummy-password' in link and '#%E8%8A%82' in link
     with page.expect_response(lambda response:response.url.endswith('/__suite/api/status'),timeout=6500):
