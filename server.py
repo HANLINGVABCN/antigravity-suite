@@ -38,6 +38,45 @@ class SuiteState:
         self.pending_imports={}
         self.auth_lock=asyncio.Lock();self.pending_mfa={};self.security_attempts={}
         self.protected_connections=set()
+        self.discovery_enabled=cfg.get('discover_existing',supervisor is None)
+        self.discovered=dict(binary=None,installations=[],configurations=[])
+        self.discovery_task=None;self.discovery_running=False
+    async def refresh_existing(self):
+        if not self.discovery_enabled:return
+        from discovery import discover
+        async with self.lock:
+            found=await asyncio.to_thread(discover,self.cfg)
+            self.discovered=found
+            if found['binary']:
+                changed=self.cfg.get('installation_directory')!=str(Path(found['binary']).parent) or self.cfg.get('antigravity_bin')!=found['binary']
+                self.cfg['installation_directory']=str(Path(found['binary']).parent)
+                self.cfg['antigravity_bin']=found['binary'];self.supervisor.antigravity_bin=found['binary']
+                if changed:self.persist()
+            seen=set()
+            for spec in found['configurations']:
+                previous=next((p for p in self.profiles.list_profiles() if p.get('kind')=='existing' and p.get('native_home')==spec['home'] and p.get('native_config_dir')==spec['config_dir']),None)
+                profile=self.profiles.register_existing(spec);seen.add(profile['id'])
+                if profile.get('token_present') and profile.get('available') and (not previous or not previous.get('token_present')):
+                    self.request_detection(profile['id'])
+            for profile in self.profiles.list_profiles():
+                if profile.get('kind')=='existing' and profile['id'] not in seen:
+                    original=self.profiles.get_profile(profile['id']);original['available']=False;self.profiles._save()
+            # Recover only the instance matching the active profile's exact HOME/config.
+            # Desktop-launched native profiles are visible even before the project starts them.
+            running=bool(self.supervisor.process and self.supervisor.process.poll() is None)
+            if not running and not self.starting_profile_id and not self.busy:
+                candidates=[]
+                if self.profiles.get_profile(self.active):candidates.append(self.profiles.get_profile(self.active))
+                candidates += [p for p in self.profiles.list_profiles() if p.get('kind')=='existing' and p.get('available') and p['id']!=self.active]
+                for p in candidates:
+                    self.bind_engine_home(p['id'])
+                    adopted=await asyncio.to_thread(self.supervisor.adopt_existing)
+                    if adopted:
+                        self.active=p['id'];self.loaded=p['id'];self.persist()
+                        break
+                if self.profiles.get_profile(self.active):self.bind_engine_home(self.active)
+            for p in self.profiles.list_profiles():
+                if p.get('kind')=='existing':self.profiles.refresh_existing_metadata(p['id'])
     def prune_imports(self):
         now=time.time()
         for token,item in list(self.pending_imports.items()):
@@ -54,7 +93,10 @@ class SuiteState:
         if self.launch_task and not self.launch_task.done():raise ValueError('正在启动档案，请等待完成')
     def bind_engine_home(self, p_id):
         self.profiles.bind_home(p_id)
-        if hasattr(self.supervisor,'set_home'): self.supervisor.set_home(self.profiles.home)
+        p=self.profiles.get_profile(p_id)
+        if p.get('kind')=='existing' and hasattr(self.supervisor,'configure_native'):self.supervisor.configure_native(p)
+        elif hasattr(self.supervisor,'set_home'):
+            self.supervisor.set_home(self.profiles.home);self.supervisor.display=self.cfg['display_num']
     def persist(self):
         self.cfg['active_profile_id']=self.active
         atomic_json(self.data/'config.json',self.cfg)
@@ -102,11 +144,22 @@ class SuiteState:
             proxy_url=self.proxy_url(p); self.busy=True; self.supervisor.is_restarting=True
             switched=False
             try:
+                if p.get('kind')=='existing' and not p.get('available'):raise ValueError('已有共享配置不可接管，请检查本体和权限')
                 if p.get('proxy_id'):
                     result=await asyncio.to_thread(self.proxies.test_proxy,p['proxy_id'])
                     if not result.get('ok'): raise ValueError('可能是代理不可用或鉴权失败，已阻止启动，避免改走直连')
                 await asyncio.to_thread(self.supervisor.stop_antigravity)
                 if old_profile and old_loaded==old: await asyncio.to_thread(self.profiles.save_active_to_profile,old)
+                self.bind_engine_home(target)
+                # Reuse a desktop-launched matching instance, rather than contend on its lock.
+                if p.get('kind')=='existing' and not p.get('proxy_id') and await asyncio.to_thread(self.supervisor.adopt_existing):
+                    has_shared_files=any(any(folder.iterdir()) for folder in (self.profiles.history.root/'conversations',self.profiles.history.root/'brain'))
+                    if not has_shared_files:
+                        self.active=target;self.loaded=target;self.last_error='';self.persist();return
+                    # A stopped merge makes other profiles' history visible in the native app.
+                    await asyncio.to_thread(self.supervisor.stop_antigravity)
+                # Stop any exact-matching orphan before changing runtime or proxy parameters.
+                await asyncio.to_thread(self.supervisor.stop_antigravity)
                 await asyncio.to_thread(self.profiles.restore_profile,target)
                 self.bind_engine_home(target)
                 switched=True
@@ -258,6 +311,7 @@ async def api(request):
             return web.json_response(p)
         if method=='DELETE':
             p_id=request.query.get('id'); s.profiles.profile_dir(p_id)
+            if s.profiles.get_profile(p_id).get('kind')=='existing':raise ValueError('已有共享配置不能删除，原配置由现有反重力使用')
             async with s.lock:
                 if s.active==p_id: await s.stop_and_save(); s.active=None
                 await asyncio.to_thread(s.profiles.delete_profile,p_id)
@@ -444,7 +498,12 @@ async def api(request):
     if path=='system/core-status' and method=='GET':
         proc=s.supervisor.process
         file=Path(s.cfg['antigravity_bin'])
-        return ok(installed=s.supervisor.installed(),size_mb=round(file.stat().st_size/1024/1024,1) if file.exists() else 0,running=bool(proc and proc.poll() is None),active_port=s.supervisor.active_port,install_state=s.installer.state,managed=s.installer.managed_directory() in file.resolve().parents)
+        installed=bool(s.discovered['binary']) if s.discovery_enabled else s.supervisor.installed()
+        return ok(installed=installed,usable=installed,button_label='卸载反重力' if installed else '安装反重力',binary_path=s.discovered['binary'] if s.discovery_enabled else str(file),
+            installations=s.discovered['installations'],size_mb=round(file.stat().st_size/1024/1024,1) if file.exists() else 0,running=bool(proc and proc.poll() is None),active_port=s.supervisor.active_port,install_state=s.installer.state,managed=s.installer.managed_directory() in file.resolve().parents)
+    if path=='system/discover' and method=='POST':
+        await s.refresh_existing()
+        return ok(discovered=s.discovered)
     if path=='system/auth-status' and method=='GET':
         from auth_probe import auth_status
         return ok(**(await auth_status(s,force=request.query.get('force')=='1')))
@@ -458,6 +517,12 @@ async def api(request):
             if s.launch_task and not s.launch_task.done():raise ValueError('正在启动档案，请等待完成')
             if s.installer.task and not s.installer.task.done():raise ValueError('已有本体操作正在进行')
             await s.stop_and_save()
+            if s.discovery_enabled:
+                from discovery import engine_processes
+                from process_tracking import ExistingProcess,stop_process
+                binary=Path(s.supervisor.antigravity_bin).resolve()
+                for info in await asyncio.to_thread(engine_processes):
+                    if Path(info['executable']).resolve()==binary:await asyncio.to_thread(stop_process,ExistingProcess(info))
             s.installer.start_uninstall()
         return web.json_response(dict(ok=True,state=s.installer.state),status=202)
     if path=='system/install-core/status' and method=='GET': return ok(state=s.installer.state)
@@ -528,13 +593,26 @@ async def resources(app):
     s.http=aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None,sock_connect=10),
                                  auto_decompress=False,cookie_jar=aiohttp.DummyCookieJar(),trust_env=False)
     boot=None
+    if s.discovery_enabled:
+        await s.refresh_existing()
+        s.discovery_running=True
+        async def scan_existing():
+            while s.discovery_running:
+                await asyncio.sleep(5)
+                if s.busy or s.starting_profile_id or (s.installer.task and not s.installer.task.done()):continue
+                try:await s.refresh_existing()
+                except Exception:logging.error('已有反重力配置扫描失败，请检查目录权限')
+        s.discovery_task=asyncio.create_task(scan_existing())
     async def autoboot():
         try:
             target=s.cfg.get('default_profile_id')
-            if target: s.request_start(target)
+            if target and not s.supervisor.active_port:s.request_start(target)
         except Exception as e: s.last_error=str(e); logging.error('默认档案启动失败：%s',e)
     if s.cfg.get('default_profile_id'): boot=asyncio.create_task(autoboot())
     yield
+    s.discovery_running=False
+    if s.discovery_task:
+        s.discovery_task.cancel();await asyncio.gather(s.discovery_task,return_exceptions=True)
     if boot and not boot.done():
         await boot
     if s.launch_task and not s.launch_task.done(): await s.launch_task

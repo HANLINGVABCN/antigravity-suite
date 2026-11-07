@@ -255,7 +255,7 @@
             <div class="pill" id="pill-core-status">本体状态检测中...</div>
             <div class="pill" id="pill-system-status">内存检测中...</div>
             <div class="pill" id="pill-cur-ip">出口检测中...</div>
-            <button class="btn btn-primary" id="btn-core-manage" onclick="openCoreInstallModal()">安装 / 卸载反重力</button>
+            <button class="btn btn-primary" id="btn-core-manage" disabled onclick="openCoreInstallModal()">检测反重力…</button>
             <button class="btn btn-secondary" onclick="openServiceSettings()">服务设置</button><button class="btn btn-secondary" onclick="stopEngine()">停止 IDE</button><button class="btn btn-secondary" onclick="logout()">登出</button>
         </div>
     </header><div style="margin:12px 24px 0;font-size:13px;color:#93c5fd">聊天记录由所有配置共享，切换账号不会隐藏其他账号的本地记录。</div><div id="google-auth-notice" role="status" style="margin:12px 24px;padding:12px;border:1px solid var(--border);border-radius:8px;font-size:13px">等待检查 Google 登录状态</div>
@@ -452,7 +452,7 @@
     <!-- Modal: 反重力本体状态与安装 -->
     <div class="modal-mask" id="modal-core-install">
         <div class="modal-box" style="max-width:480px;">
-            <div class="modal-title">安装 / 卸载反重力</div>
+            <div class="modal-title">反重力本体</div>
             <div style="font-size:13px; color:var(--text-sub); line-height:1.6; margin-bottom:16px;">
                 在这里安装或卸载本套件的反重力本体，当前状态以上方检测结果为准。<br>
                 <b style="color:#f1f5f9;">提示：</b>未安装本体<b style="color:#34d399;">完全不影响</b>您登录控制台、管理账号档案、配置出站代理或导出配置文件！仅当您需要进入 Web IDE 时才需安装。
@@ -682,6 +682,8 @@
         function updateCoreBadge() {
             const pill = document.getElementById("pill-core-status");
             if (!pill || !coreStatus) return;
+            const action = document.getElementById('btn-core-manage');
+            action.disabled = false; action.textContent = coreStatus.installed ? '卸载反重力' : '安装反重力';
             if (coreStatus.installed) {
                 pill.className = "pill pill-active";
                 pill.innerHTML = `🟢 反重力本体: 已就绪 (${coreStatus.size_mb}MB)`;
@@ -729,11 +731,12 @@
                     const boundProxy = (currentStatus.proxies || []).find(px => px.id === p.proxy_id);
 
                     const div = document.createElement("div");
-                    div.className = "card-item" + (isCur ? " active-item" : "");
+                    div.className = "card-item" + (isCur ? " active-item" : "") + (p.kind === 'existing' ? ' existing-item' : '');
                     div.innerHTML = `
                         <div class="card-head">
                             <div class="card-title">
                                 ${escapeHtml(p.name)}
+                                ${p.kind === 'existing' ? '<span class="tag-default">已有共享配置</span>' : ''}
                                 ${isCur && currentStatus.antigravity_ready ? '<span class="pill pill-active" style="padding:2px 8px; font-size:10px;">当前运行</span>' : ''}
                                 ${isDef ? '<span class="tag-default">开机默认</span>' : ''}
                             </div>
@@ -742,6 +745,7 @@
                             </div>
                         </div>
                         <div class="card-meta">
+                            ${p.kind === 'existing' ? `<span>配置位置：${escapeHtml(p.native_config_dir)}</span><span>${p.available ? '可接管现有本体，直接共用原配置' : '当前不可接管，请检查本体和权限'}</span>` : ''}
                             <span>🛡️ 绑定网络: <b>${boundProxy ? escapeHtml(boundProxy.name) : '本机直连'}</b></span>
                             <span>🕒 上次活跃: ${escapeHtml(p.last_used_at || p.created_at)}</span>
                         </div>
@@ -752,7 +756,7 @@
                             <button class="btn btn-secondary" onclick="openEditModal('${p.id}')">📝 详情与编辑</button>
                             <button class="btn btn-secondary" onclick="toggleDefault('${p.id}')">${isDef ? '取消默认' : '⭐️ 设为开机默认'}</button>
                             <button class="btn btn-secondary" onclick="exportProfile('${p.id}')">📤 导出</button>
-                            <button class="btn btn-danger" onclick="deleteProfile('${p.id}')">🗑️ 删除</button>
+                            ${p.kind === 'existing' ? '<span style="font-size:12px;color:#93c5fd;">原配置保留</span>' : `<button class="btn btn-danger" onclick="deleteProfile('${p.id}')">🗑️ 删除</button>`}
                         </div>
                     `;
                     pCont.appendChild(div);
@@ -1008,13 +1012,15 @@
         }
 
         async function openCoreInstallModal() {
+            await fetch('/__suite/api/system/discover', {method:'POST'});
             await fetchCoreStatus();
             document.getElementById("modal-core-install").classList.add("active");
-            document.getElementById("btn-uninstall-core").disabled = !coreStatus?.installed;
-            document.getElementById("btn-do-core-install").textContent = coreStatus?.installed ? "重新安装反重力" : "安装反重力";
+            document.getElementById("btn-uninstall-core").style.display = coreStatus?.installed ? 'inline-flex' : 'none';
+            document.getElementById("btn-do-core-install").style.display = coreStatus?.installed ? 'none' : 'inline-flex';
+            document.getElementById("btn-do-core-install").textContent = "安装反重力";
             const box = document.getElementById("core-install-progress-box"); box.style.display = "block";
             document.getElementById("core-install-status-text").textContent = coreStatus?.installed ?
-                "本体已安装。卸载只移除本套件的本体，账号档案保留。" : "尚未安装本体，仍可管理账号和代理。";
+                "已发现可用反重力：" + coreStatus.binary_path + "。项目使用现有本体和配置；卸载会保留账号、配置及聊天记录。" : "未发现可用本体，请安装反重力。已有配置会保留。";
             const task = coreStatus?.install_state?.status;
             if (['queued','downloading','installing','uninstalling'].includes(task)) pollCoreTask();
         }
@@ -1032,7 +1038,9 @@
                     if (['done','error','idle'].includes(st.status)) {
                         clearInterval(coreInstallPollTimer); coreInstallPollTimer = null;
                         await fetchStatus(); install.disabled = false; uninstall.disabled = !coreStatus?.installed;
-                        install.textContent = coreStatus?.installed ? '重新安装反重力' : '安装反重力';
+                        install.style.display = coreStatus?.installed ? 'none' : 'inline-flex';
+                        uninstall.style.display = coreStatus?.installed ? 'inline-flex' : 'none';
+                        install.textContent = '安装反重力';
                     }
                 } catch (error) { clearInterval(coreInstallPollTimer); install.disabled = false; alert('可能是服务连接异常：' + error.message); }
             };
@@ -1042,7 +1050,7 @@
             await fetch("/__suite/api/system/install-core", {method:"POST"}); pollCoreTask();
         }
         async function uninstallCore() {
-            if (!confirm("卸载本套件的反重力本体？会先停止 IDE；账号档案和备份保留。")) return;
+            if (!confirm("卸载当前发现的反重力本体？会先停止对应实例，桌面和网页暂时都不能使用。原配置、账号和聊天记录保留，本体留存备份。")) return;
             await fetch("/__suite/api/system/uninstall-core", {method:"POST"}); pollCoreTask();
         }
 

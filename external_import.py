@@ -141,7 +141,7 @@ def export_external(profiles,p_id,format):
     if not profile:raise ValueError('档案不存在')
     folder=profiles.profile_dir(p_id)
     home=profiles.home_for(p_id)
-    file=home/'.gemini/jetski-standalone-oauth-token' if (home/'.suite-home-initialized').exists() else folder/'store/jetski-standalone-oauth-token'
+    file=home/'.gemini/jetski-standalone-oauth-token' if profile.get('kind')=='existing' or (home/'.suite-home-initialized').exists() else folder/'store/jetski-standalone-oauth-token'
     if not file.is_file() or file.stat().st_size>1024*1024:raise ValueError('这个配置没有可导出的 Google 登录凭据，请先完成授权')
     try:value=json.loads(file.read_text(encoding='utf-8'))
     except (ValueError,UnicodeError):raise ValueError('登录凭据文件格式无效')

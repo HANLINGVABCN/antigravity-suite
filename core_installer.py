@@ -5,6 +5,7 @@ import os
 import platform
 import tempfile
 import shutil
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -27,16 +28,33 @@ class CoreInstaller:
         self.state = {'status':'uninstalling','message':'正在卸载本套件的反重力本体','log':''}
         self.task = asyncio.create_task(self.uninstall())
     def managed_directory(self):
-        root=Path(self.cfg.get('core_directory',Path(self.cfg.get('data_dir',self.cfg['runtime_home'])).parent/'core'))
+        root=Path(self.cfg.get('installation_directory') or self.cfg.get('core_directory',Path(self.cfg.get('data_dir',self.cfg['runtime_home'])).parent/'core'))
         return root.resolve()
     async def uninstall(self):
         try:
             root=self.managed_directory()
             binary=Path(self.supervisor.antigravity_bin).resolve()
-            if root==Path('/') or root in binary.parents and len(root.parts)<3: raise ValueError('本体目录配置无效')
-            if root not in binary.parents: raise ValueError('当前本体由服务器其他应用共享，不能从本套件卸载')
-            if root.exists(): await asyncio.to_thread(shutil.rmtree,root)
-            self.state.update(status='done',message='本套件的反重力本体已卸载；账号档案和备份保留')
+            if root in binary.parents:
+                if len(root.parts)<3:raise ValueError('本体目录配置无效')
+                directory=root
+            else:
+                # Only a validated standalone application directory may be moved.
+                from discovery import validate_binary
+                report=await asyncio.to_thread(validate_binary,binary)
+                if not report['usable']:raise ValueError('没有已验证可接管的反重力本体')
+                directory=binary.parent
+                if directory.name.lower()!='antigravity' or len(directory.parts)<3:raise ValueError('此本体不是独立应用目录，不能自动卸载')
+                from discovery import engine_processes
+                if any(Path(p['executable']).resolve()==binary for p in engine_processes()):raise ValueError('仍有反重力实例运行，请先停止后卸载')
+            if not directory.exists():raise ValueError('本体已经不存在')
+            backups=Path(self.cfg.get('data_dir',self.cfg['runtime_home'])).parent/'antigravity-suite-backups'
+            backups.mkdir(parents=True,exist_ok=True,mode=0o700)
+            target=backups/('uninstalled-antigravity-'+str(time.time_ns()))
+            await asyncio.to_thread(shutil.move,str(directory),str(target))
+            self.cfg['antigravity_bin']=str(root/'antigravity');self.supervisor.antigravity_bin=self.cfg['antigravity_bin']
+            from config import atomic_json
+            atomic_json(Path(self.cfg.get('data_dir',Path(self.cfg['runtime_home']).parent))/'config.json',self.cfg)
+            self.state.update(status='done',message='反重力本体已卸载并留存备份；原配置、账号和聊天记录保留')
         except Exception as e: self.state.update(status='error',message=str(e))
 
     async def run(self, args):

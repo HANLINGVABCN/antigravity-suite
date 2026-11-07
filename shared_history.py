@@ -36,8 +36,8 @@ class SharedHistory:
                     if newer==target:continue
                 shutil.copy2(item,target)
 
-    def merge_database(self,source):
-        source=Path(source);target=self.root/DATABASE
+    def merge_database(self,source,target=None):
+        source=Path(source);target=Path(target) if target is not None else self.root/DATABASE
         if not source.is_file() or source.is_symlink():return
         # Snapshot through SQLite so committed WAL data is included.
         with tempfile.TemporaryDirectory(dir=self.root,prefix='.db-import-') as tmp:
@@ -81,6 +81,26 @@ class SharedHistory:
         native=Path(native)
         for name in DIRECTORIES:self.merge_tree(native/name,self.root/name)
         self.merge_database(native/DATABASE)
+    def sync_native(self,native,uid=None):
+        """Merge history while stopped without linking a user's HOME into root data."""
+        native=Path(native);native.mkdir(parents=True,exist_ok=True)
+        self.merge_native(native)
+        for name in DIRECTORIES:
+            (native/name).mkdir(exist_ok=True)
+            self.merge_tree(self.root/name,native/name)
+        database=self.root/DATABASE
+        if database.is_file():self.merge_database(database,native/DATABASE)
+        if uid is not None and hasattr(os,'geteuid') and os.geteuid()==0:
+            import pwd
+            gid=pwd.getpwuid(uid).pw_gid
+            if native.stat().st_uid==os.geteuid():os.chown(native,uid,gid)
+            paths=[native/name for name in DIRECTORIES]+[native/DATABASE]
+            for path in paths:
+                if path.exists() and not path.is_symlink():
+                    os.chown(path,uid,gid)
+                    if path.is_dir():
+                        for item in path.rglob('*'):
+                            if not item.is_symlink():os.chown(item,uid,gid)
 
     def attach(self,home):
         native=Path(home)/'.gemini/antigravity'

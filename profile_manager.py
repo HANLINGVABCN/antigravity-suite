@@ -7,6 +7,7 @@ import tarfile
 import tempfile
 import time
 import uuid
+import hashlib
 from pathlib import Path, PurePosixPath
 from config import atomic_json
 from shared_history import SharedHistory
@@ -43,12 +44,52 @@ class ProfileManager:
             (self.home / '.gemini/antigravity', 'gemini_antigravity'),
             (self.home / '.config/antigravity', 'antigravity_credentials')]
     def home_for(self, p_id):
+        profile=self.get_profile(p_id)
+        if profile and profile.get('kind')=='existing':return Path(profile['native_home'])
         return self.profile_dir(p_id) / 'home'
     def bind_home(self, p_id):
         home = self.home_for(p_id)
         if home.is_symlink(): raise ValueError('档案运行目录不能是符号链接')
         self._set_home(home)
         self.bound_profile = p_id
+        profile=self.get_profile(p_id)
+        if profile.get('kind')=='existing':
+            self.runtime_targets=[(home/'.gemini/jetski-standalone-oauth-token','jetski-standalone-oauth-token'),
+                (Path(profile['native_config_dir']),'Antigravity_config'),(home/'.gemini/antigravity','gemini_antigravity'),
+                (home/'.config/antigravity','antigravity_credentials')]
+    def register_existing(self,spec):
+        key=str(Path(spec['home']).resolve())+'\0'+str(Path(spec['config_dir']).resolve())
+        identifier=hashlib.sha256(key.encode()).hexdigest()[:32]
+        item=self.get_profile(identifier)
+        if item and item.get('kind')!='existing':raise ValueError('已有配置 ID 与普通配置冲突')
+        if item is None:
+            stamp=time.strftime('%Y-%m-%d %H:%M:%S')
+            item=dict(id=identifier,name='已有共享配置 · '+Path(spec['home']).name,email='未登录',proxy_id='',
+                created_at=stamp,last_used_at=stamp,kind='existing')
+            self.profiles.append(item)
+            (self.profiles_dir/identifier/'store').mkdir(parents=True,exist_ok=True,mode=0o700)
+        updates=dict(native_home=spec['home'],native_config_dir=spec['config_dir'],native_uid=spec['uid'],
+            native_binary=spec['binary'],native_display=spec['display'],native_env=spec.get('session_env',{}),available=spec['available'])
+        changed=any(item.get(k)!=v for k,v in updates.items())
+        item.update(updates)
+        if changed:self._save()
+        self.refresh_existing_metadata(identifier)
+        return item
+    def refresh_existing_metadata(self,p_id):
+        item=self.get_profile(p_id)
+        if not item or item.get('kind')!='existing':return
+        token=Path(item['native_home'])/'.gemini/jetski-standalone-oauth-token'
+        email='未登录';present=False
+        try:
+            if token.is_file() and token.stat().st_size<=1024*1024:
+                value=json.loads(token.read_text(encoding='utf-8'))
+                if isinstance(value,dict):
+                    present=bool(value.get('token',{}).get('refresh_token'))
+                    candidate=value.get('id_token_email')
+                    email=candidate if isinstance(candidate,str) and len(candidate)<=320 else '未登录'
+        except (OSError,ValueError,TypeError,AttributeError):pass
+        if item.get('email')!=email or item.get('token_present')!=present:
+            item.update(email=email,token_present=present);self._save()
     def file_in_home(self,p_id,relative):
         parts=PurePosixPath(relative).parts
         roots={'jetski-standalone-oauth-token':'.gemini/jetski-standalone-oauth-token','Antigravity_config':'.config/Antigravity','gemini_antigravity':'.gemini/antigravity','antigravity_credentials':'.config/antigravity'}
@@ -96,10 +137,16 @@ class ProfileManager:
             raise
         return p
     def delete_profile(self,p_id):
+        if self.get_profile(p_id) and self.get_profile(p_id).get('kind')=='existing':raise ValueError('已有共享配置不能删除，原数据由现有反重力使用')
         remove_path(self.profile_dir(p_id))
         self.profiles=[p for p in self.profiles if p['id']!=p_id]
         self._save()
     def save_active_to_profile(self,p_id):
+        profile=self.get_profile(p_id)
+        if profile and profile.get('kind')=='existing':
+            # Snapshot credentials but never overwrite the native runtime during restore.
+            self.bind_home(p_id)
+            self.history.merge_native(Path(profile['native_home'])/'.gemini/antigravity')
         folder=self.profile_dir(p_id)
         stage=Path(tempfile.mkdtemp(prefix='.snapshot-',dir=folder))
         old=folder/'.previous-store'
@@ -123,6 +170,12 @@ class ProfileManager:
         store=self.profile_dir(p_id)/'store'
         if not store.is_dir(): raise ValueError('档案存储目录不存在')
         self.bind_home(p_id)
+        profile=self.get_profile(p_id)
+        if profile.get('kind')=='existing':
+            if not profile.get('available'):raise ValueError('已有配置当前不可接管，请检查本体和目录权限')
+            self.history.sync_native(self.home/'.gemini/antigravity',profile['native_uid'])
+            self.refresh_existing_metadata(p_id)
+            return True
         marker=self.home/'.suite-home-initialized'
         if marker.exists():
             # The persistent per-profile HOME is authoritative after migration.
@@ -156,7 +209,9 @@ class ProfileManager:
         return True
     def export_profile(self,p_id,output_path,proxy=None):
         folder=self.profile_dir(p_id)
-        atomic_json(folder/'profile.json',self.get_profile(p_id))
+        profile=self.get_profile(p_id)
+        metadata={key:profile.get(key) for key in ('id','name','email','proxy_id','created_at','last_used_at')}
+        atomic_json(folder/'profile.json',metadata)
         with tarfile.open(output_path,'w:gz') as tar:
             tar.add(folder/'store',arcname='profile/store')
             tar.add(folder/'profile.json',arcname='profile/profile.json')
@@ -166,8 +221,8 @@ class ProfileManager:
                     node=Path(tmp)/'proxy.json'
                     atomic_json(node,proxy)
                     tar.add(node,arcname='profile/proxy.json')
-            home=folder/'home'
-            if home.is_dir():
+            home=folder/'home' if profile.get('kind')!='existing' else None
+            if home is not None and home.is_dir():
                 def filter_member(info):
                     parts=PurePosixPath(info.name).parts
                     if any(n in IGNORE or n.startswith('Singleton') or 'Cache' in n or n in ('.tmp','.cache','engine.log') for n in parts):return None

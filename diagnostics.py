@@ -29,8 +29,17 @@ async def run_detection(state, p_id):
                     state.diagnostics[p_id]=dict(status='abnormal',severity='warning',authorized=False,
                         reason='可能是尚未安装可用的反重力本体，暂时不能完成原生账号检测；凭据仍已保存',checked_at=time.time())
                     return
-                await asyncio.to_thread(state.profiles.restore_profile,p_id)
-                temporary=ProcessSupervisor(state.cfg['antigravity_bin'],state.cfg['display_num'],runtime_home=state.profiles.home)
+                if profile.get('kind')=='existing':
+                    state.profiles.bind_home(p_id)
+                    temporary=ProcessSupervisor(state.cfg['antigravity_bin'],state.cfg['display_num'],runtime_home=state.profiles.home)
+                    temporary.configure_native(profile)
+                    # Inspect an existing app without terminating or rewriting its data.
+                    already_running=await asyncio.to_thread(temporary.adopt_existing)
+                    if not already_running:await asyncio.to_thread(state.profiles.restore_profile,p_id)
+                else:
+                    await asyncio.to_thread(state.profiles.restore_profile,p_id)
+                    temporary=ProcessSupervisor(state.cfg['antigravity_bin'],state.cfg['display_num'],runtime_home=state.profiles.home)
+                    already_running=False
                 temporary.is_restarting=True
                 from outbound_proxy import OutboundProxy
                 bridge=await OutboundProxy(proxy).__aenter__()
@@ -48,8 +57,10 @@ async def run_detection(state, p_id):
         finally:
             if temporary:
                 temporary._running=False
-                await asyncio.to_thread(temporary.close)
-                await asyncio.to_thread(state.profiles.save_active_to_profile,p_id)
+                if already_running:temporary.process=None
+                else:
+                    await asyncio.to_thread(temporary.close)
+                    await asyncio.to_thread(state.profiles.save_active_to_profile,p_id)
             if bridge: await bridge.close()
             state.profiles._set_home(old_home)
             state.profiles.bound_profile=old_binding
