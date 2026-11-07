@@ -583,6 +583,9 @@ async def page(request):
     if request.path=='/__suite/privacy.js': return web.FileResponse(s.static/'privacy.js')
     if request.path=='/__suite/proxy-editor.js': return web.FileResponse(s.static/'proxy-editor.js')
     if request.path=='/__suite/security.js': return web.FileResponse(s.static/'security.js')
+    if request.path=='/__suite/portal-ui.js': return web.FileResponse(s.static/'portal-ui.js')
+    if request.path=='/__suite/portal.js': return web.FileResponse(s.static/'portal.js')
+    if request.path=='/__suite/portal.css': return web.FileResponse(s.static/'portal.css')
     if request.path=='/__suite/portal' or (request.path=='/' and 'portal' in request.query):
         return web.FileResponse(s.static/'portal.html',headers={'Cache-Control':'no-store'})
     if request.path.startswith('/__suite/'): raise web.HTTPNotFound()

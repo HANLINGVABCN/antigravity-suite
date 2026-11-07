@@ -8,11 +8,11 @@ Linux VPS 上的 Antigravity 账号配置管理、Web 反代与共享聊天记�
 
 **所有配置共用本地聊天记录，登录凭据和运行目录分别保存。** 支持管理员门禁、悬浮控制面板、账号检测、代理链接导入及本体安装／卸载。
 
-这是独立社区项目，与 Google 无隶属关系。当前版本为 **v0.6.0**，上游兼容性仍可能变化。
+这是独立社区项目，与 Google 无隶属关系。当前版本为 **v0.7.0**，上游兼容性仍可能变化。
 
 ## 功能
 
-- 随机初始管理员密码、密码哈希、登录限速与会话验证；网页可选开启验证器 App 两步验证，支持本机生成的绑定二维码和一次性恢复码。
+- 终端安装向导可选端口、管理员用户名、自定义或随机密码；升级默认保留已有设置。使用密码哈希、登录限速与会话验证；网页可选开启验证器 App 两步验证，支持本机生成的绑定二维码和一次性恢复码。
 - HTTP 流式转发、gRPC-Web 和 WebSocket 支持；可搭配 HTTPS 反代或 SSH 转发。
 - 优先发现已有可用反重力本体和配置，特殊标出“已有共享配置”，原生入口与网页读取同一原配置，不再复制第二套本体。
 - 每个普通账号配置拥有独立 HOME、Cookie、缓存和默认项目目录；所有账号读取同一个本地对话库。
@@ -20,6 +20,7 @@ Linux VPS 上的 Antigravity 账号配置管理、Web 反代与共享聊天记�
 - 启动按钮分为 **切换并启动 → 启动中 → 进入**，启动完成后再次点击才进入 IDE。
 - 每张配置卡支持检测；授权保存及启动完成后自动检测。异常以红色突出显示，附上“可能是……”原因与时间。
 - 支持 HTTP、HTTPS、SOCKS4/4a、SOCKS5/5h、IPv6、带认证的节点和逐行链接导入。节点可查看详情、修改字段或替换单个链接；配置和节点的 ID 创建后固定，改名和换地址不会解除绑定。
+- 网页适配短窗口和手机：长弹窗的内容可以滚动，保存和关闭按钮始终可见；仅修改节点名称时自动同步链接备注，真实连接冲突仍拒绝保存。
 - 默认限制 IDE 网页向外部站点发起请求，阻止外部跳转、预连接和 WebRTC，并移除客户端 IP 转发头。
 - 独立本体下载、安装和卸载；档案导入导出与文本配置编辑。导出可选附带绑定代理，导入有代理文件时才显示导入选项，没有则提示“无代理文件”并直接导入配置。卸载本体保留账号及聊天库。
 
@@ -33,11 +34,21 @@ cd antigravity-suite
 sudo bash install.sh
 ```
 
-默认监听 `127.0.0.1:18888`。初始密码保存在：
+运行后先显示**终端安装向导**，依次选择：
+
+1. 后台监听端口，默认 `18888`。
+2. 管理员用户名，默认 `admin`。
+3. 随机生成密码，或自己设置密码并再次确认。自定义密码至少 12 个字符，输入不显示。
+
+选好后安装并启动后台，默认仅监听本机 `127.0.0.1`。选择随机密码时，安装结果会提示私有文件的位置：
 
 ```text
 /var/lib/antigravity-suite-improved/initial-credentials.txt
 ```
+
+可用 `sudo cat /var/lib/antigravity-suite-improved/initial-credentials.txt` 查看首次随机凭据。自定义密码使用刚才输入的内容，不保存明文；升级继续使用你当前的密码，旧的首次凭据文件不会更新。
+
+已有配置时默认“保留设置升级”，也可选择仅修改端口；账号密码和验证器在网页“服务设置”中修改。自动安装可执行 `sudo bash install.sh --non-interactive`：首次使用默认端口、`admin` 和随机密码，升级保留原值。
 
 从本机访问 VPS，可以运行：
 
@@ -45,7 +56,7 @@ sudo bash install.sh
 ssh -N -L 127.0.0.1:19088:127.0.0.1:18888 user@your-vps.example
 ```
 
-然后打开 `http://localhost:19088/?portal=1`。VPS 虚拟桌面内则打开 `http://localhost:18888/?portal=1`。
+然后打开 `http://localhost:19088/?portal=1`。VPS 虚拟桌面内则打开 `http://localhost:18888/?portal=1`。若选择其他后台端口，请将转发目标和 VPS 内访问端口替换为实际值。
 
 容器 / Supervisor 部署、反代、升级和数据迁移见 [部署说明](docs/deployment.md)。不使用 systemd 的容器请按手动部署步骤安装。
 
@@ -73,7 +84,15 @@ python -m pytest -q
 python tools/check_frontend.py
 ```
 
-GitHub Actions 在 Linux / Python 3.9、3.11、3.14 上验证回归测试与源码发布检查。测试使用假后端和本地临时数据，不需要真实 Google 账号或代理。Windows 仅用于部分开发验证，Linux 符号链接测试在 Linux 执行。
+GitHub Actions 在 Linux / Python 3.9、3.11、3.14 上验证回归测试与源码发布检查，并单独运行 Chromium 界面测试。测试使用假后端和本地临时数据，不需要真实 Google 账号或代理。Windows 仅用于部分开发验证，Linux 符号链接及终端输入测试在 Linux 执行。
+
+界面检查需要 Python 3.11+ 和测试浏览器，不属于运行服务的依赖：
+
+```bash
+python -m pip install -r requirements-browser.txt
+python -m playwright install chromium
+python -m pytest -q tests/test_portal_browser.py
+```
 
 ## 项目文档
 

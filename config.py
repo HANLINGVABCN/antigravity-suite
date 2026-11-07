@@ -42,18 +42,22 @@ def check_password(password, stored):
 def generate_secure_password(length=20):
     return secrets.token_urlsafe(length)[:length]
 
-def load_config():
-    DATA_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+def default_config(data_dir=None):
+    data_dir = Path(data_dir).resolve() if data_dir is not None else DATA_DIR
     artifact='linux-arm' if platform.machine().lower() in ('aarch64','arm64') else 'linux-x64'
     existing='/opt/Antigravity/antigravity' if Path('/opt/Antigravity/antigravity').is_file() else '/opt/antigravity/antigravity'
-    cfg = dict(listen_host='127.0.0.1', listen_port=18888, auth_user='admin',
+    return dict(listen_host='127.0.0.1', listen_port=18888, auth_user='admin',
                auth_password_hash='', session_secret=secrets.token_hex(32),
                mfa_enabled=False,mfa_secret='',mfa_recovery_hashes=[],mfa_last_counter=-1,
                default_profile_id=None, active_profile_id=None,
                antigravity_bin=existing, display_num=':99',
-               runtime_home=str(DATA_DIR / 'runtime-home'), profiles_dir=str(PROFILES_DIR),
+               runtime_home=str(data_dir / 'runtime-home'), profiles_dir=str(data_dir / 'profiles'),
                backend_scheme='https', backend_verify_tls=False, trusted_proxy=False,
                cookie_secure='auto', core_deb_url='https://storage.googleapis.com/antigravity-public/antigravity-hub/2.29.0-5723181030440960/'+artifact+'/Antigravity.deb')
+
+def load_config():
+    DATA_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    cfg = default_config()
     if CONFIG_FILE.exists():
         with CONFIG_FILE.open(encoding='utf-8') as f: saved = json.load(f)
         cfg.update(saved)

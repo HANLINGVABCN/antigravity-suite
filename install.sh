@@ -1,6 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 umask 077
+WIZARD_ARGS=()
+for ARG in "$@"; do
+  case "$ARG" in
+    --non-interactive) WIZARD_ARGS=(--non-interactive);;
+    --help|-h)
+      echo '用法：sudo bash install.sh [--non-interactive]'
+      echo '默认显示安装向导：选择端口、管理员用户名、随机或自定义密码。'
+      echo '已有配置默认保留，可选择只调整端口；账号密码和验证器在网页中修改。'
+      echo '--non-interactive：首次使用 18888/admin/随机密码；升级保留全部设置。'
+      exit 0;;
+    *) echo "未知选项：$ARG（使用 --help 查看用法）"; exit 1;;
+  esac
+done
 SOURCE_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 INSTALL_DIR=${ANTIGRAVITY_INSTALL_DIR:-/opt/antigravity-suite-improved}
 DATA_DIR=${ANTIGRAVITY_SUITE_DATA:-/var/lib/antigravity-suite-improved}
@@ -12,19 +25,35 @@ if [[ ! -d /run/systemd/system ]]; then
 fi
 case "$INSTALL_DIR" in /opt/antigravity-suite*) ;; *) echo '安装目录必须位于 /opt/antigravity-suite*'; exit 1;; esac
 case "$DATA_DIR" in /var/lib/antigravity-suite*) ;; *) echo '数据目录必须位于 /var/lib/antigravity-suite*'; exit 1;; esac
+export DEBIAN_FRONTEND=noninteractive
+if ! command -v python3 >/dev/null 2>&1; then
+  echo '先准备安装向导所需的 Python 3。'
+  apt-get update
+  apt-get install -y --no-install-recommends python3
+fi
+python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else "需要 Python 3.9 或更高版本")'
 WAS_ACTIVE=0
+PLAN_FILE=$(mktemp /tmp/antigravity-suite-install-XXXXXX.json)
+cleanup() {
+  RESULT=$?
+  rm -f -- "$PLAN_FILE"
+  if [[ $RESULT -ne 0 && $WAS_ACTIVE -eq 1 ]]; then
+    systemctl start "$SERVICE_NAME.service" || true
+  fi
+}
+trap cleanup EXIT
+python3 "$SOURCE_DIR/configure_install.py" --data-dir "$DATA_DIR" --prepare "$PLAN_FILE" "${WIZARD_ARGS[@]}"
 if systemctl is-active --quiet "$SERVICE_NAME.service"; then
   WAS_ACTIVE=1
   systemctl stop "$SERVICE_NAME.service"
 fi
-trap 'if [[ $WAS_ACTIVE -eq 1 ]]; then systemctl start "$SERVICE_NAME.service" || true; fi' ERR
+python3 "$SOURCE_DIR/configure_install.py" --data-dir "$DATA_DIR" --check-port "$PLAN_FILE"
 if [[ -f "$DATA_DIR/config.json" ]]; then
   BACKUP_DIR=/var/backups/antigravity-suite-improved
   mkdir -p "$BACKUP_DIR"
   tar -czf "$BACKUP_DIR/data-$(date +%Y%m%d-%H%M%S).tar.gz" -C "$(dirname "$DATA_DIR")" "$(basename "$DATA_DIR")"
   echo "升级前已备份数据到 $BACKUP_DIR"
 fi
-export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends python3 xvfb x11-utils curl ca-certificates libnss3 libatk1.0-0 libatk-bridge2.0-0 libx11-xcb1 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libgtk-3-0
 mkdir -p "$INSTALL_DIR" "$DATA_DIR"
@@ -49,11 +78,16 @@ fi
 "$INSTALL_DIR/.venv/bin/python" -m pip install --upgrade pip
 "$INSTALL_DIR/.venv/bin/python" -m pip install -r "$INSTALL_DIR/requirements.txt"
 cd "$INSTALL_DIR"
-ANTIGRAVITY_SUITE_DATA="$DATA_DIR" "$INSTALL_DIR/.venv/bin/python" - <<'PY'
+"$INSTALL_DIR/.venv/bin/python" configure_install.py --data-dir "$DATA_DIR" --apply "$PLAN_FILE"
+HEALTH_URL=$(ANTIGRAVITY_SUITE_DATA="$DATA_DIR" "$INSTALL_DIR/.venv/bin/python" - <<'PY'
 from config import load_config
 cfg=load_config()
-print('监听地址：%s:%s' % (cfg['listen_host'],cfg['listen_port']))
+host=cfg['listen_host']
+host='127.0.0.1' if host=='0.0.0.0' else '::1' if host=='::' else host
+if ':' in host:host='['+host+']'
+print('http://%s:%s/?portal=1' % (host,cfg['listen_port']))
 PY
+)
 cat > "/etc/systemd/system/$SERVICE_NAME.service" <<UNIT
 [Unit]
 Description=Antigravity Suite Improved
@@ -75,7 +109,16 @@ WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
 systemctl enable --now "$SERVICE_NAME"
-trap - ERR
-echo "服务已启动。首次密码保存在 $DATA_DIR/initial-credentials.txt；升级不会重置密码。"
+HEALTHY=0
+for ATTEMPT in {1..20}; do
+  if systemctl is-active --quiet "$SERVICE_NAME.service" && curl -fsS --noproxy '*' --max-time 1 "$HEALTH_URL" >/dev/null 2>&1; then HEALTHY=1; break; fi
+  sleep 1
+done
+if [[ $HEALTHY -ne 1 ]]; then
+  echo "后台未通过启动检查，请运行：journalctl -u $SERVICE_NAME -n 80"
+  exit 1
+fi
+echo "后台已启动：$HEALTH_URL"
 echo '反重力本体可在网页检测并安装，管理登录和档案导入不依赖本体。'
+echo '首次自定义密码使用刚才的输入；随机密码查看上方私有文件。升级继续使用现有密码。'
 echo '默认仅监听本机。通过 SSH 转发或你选择的反向代理访问。'

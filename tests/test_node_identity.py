@@ -115,12 +115,52 @@ const replaced = buildUpdate('stable-id', original, 'socks5://other.example:1080
 const cleared = buildUpdate('stable-id', original, '', {...fields,password:'',clear_password:true});
 process.stdout.write(JSON.stringify({manual,replaced,cleared}));
 '''
-    result=subprocess.run(['node','-e',script,str(editor)],capture_output=True,text=True,check=True)
+    result=subprocess.run(['node','-e',script,str(editor)],capture_output=True,encoding='utf-8',check=True)
     values=json.loads(result.stdout)
     assert values['manual']['id']=='stable-id' and values['manual']['name']=='Renamed' and values['manual']['host']=='new.example'
     assert values['manual']['link']=='http://user:old-password@old.example:8080#Original' and values['manual']['password']=='new-password'
     assert values['replaced']['link']=='socks5://other.example:1080#New' and values['replaced']['host']=='new.example'
     assert values['cleared']['clear_password'] and 'link' not in values['cleared']
+
+
+@pytest.mark.skipif(shutil.which('node') is None,reason='Frontend helper test requires Node.js')
+def test_editor_renaming_syncs_only_untouched_remark_and_keeps_connection_bytes():
+    import subprocess,json
+    from pathlib import Path
+    script=r'''
+const {syncName} = require(process.argv[1]);
+const prefix = 'socks5h://a%40b:p%3A%40%20%2F@[2001:db8::1]:1080';
+const original = prefix + '#%E8%8A%82%E7%82%B9%20A%231';
+const renamed = syncName(original, '节点 A#1', ' 新名称 #2 ');
+process.stdout.write(JSON.stringify({prefix,renamed,
+ restored:syncName(renamed, '新名称 #2', '节点 A#1'),
+ edited:syncName(prefix+'#ManuallyChanged','节点 A#1','New'),
+ noRemark:syncName(prefix,'Old','New'),
+ cleared:syncName('','Old','New')}));
+'''
+    result=subprocess.run(['node','-e',script,str(Path(__file__).parents[1]/'static/proxy-editor.js')],capture_output=True,encoding='utf-8',check=True)
+    values=json.loads(result.stdout)
+    assert values['renamed']==values['prefix']+'#%E6%96%B0%E5%90%8D%E7%A7%B0%20%232'
+    assert values['restored']==values['prefix']+'#%E8%8A%82%E7%82%B9%20A%231'
+    assert values['edited']==values['prefix']+'#ManuallyChanged'
+    assert values['noRemark']==values['prefix']+'#New' and values['cleared']==''
+
+
+@pytest.mark.parametrize('protocol,host,password',[
+    ('http','node.example','private-password '),
+    ('socks5h','2001:db8::1','p:@ /'),
+])
+def test_unchanged_prefilled_link_allows_name_only_edit_without_changing_identity(tmp_path,protocol,host,password):
+    nodes=ProxyManager(tmp_path)
+    node=nodes.add_proxy('旧备注 #1',protocol,host,1080,'a@b',password)
+    profiles=ProfileManager(tmp_path,tmp_path/'profiles')
+    profile=profiles.create_profile('P',node['id'])
+    original=copy.deepcopy(node);link=nodes.get_proxy_link(node)
+    nodes.update_proxy(node['id'],dict(link=link,name='新备注 #2',protocol=protocol,host=host,port='1080',username='a@b',password='',clear_password=False))
+    assert node['id']==original['id'] and node['created_at']==original['created_at']
+    assert node['name']=='新备注 #2' and node['password']==password
+    assert nodes.get_proxy_link(node).split('#',1)[0]==link.split('#',1)[0]
+    assert profile['proxy_id']==node['id'] and ProxyManager(tmp_path).get_proxy(node['id'])==node
 
 
 def test_link_and_fields_must_match_before_node_is_saved(tmp_path):
@@ -133,12 +173,15 @@ def test_link_and_fields_must_match_before_node_is_saved(tmp_path):
     assert node['id']==original['id'] and node['password']=='private-password'
     disk=nodes.file_path
     saved_disk=__import__('pathlib').Path(disk).read_bytes()
-    for key,value in [('name','Different'),('protocol','socks5'),('host','other.example'),('port',8888),('username','other'),('password','a-new-secret'),('clear_password',True)]:
+    for key,value in [('protocol','socks5'),('host','other.example'),('port',8888),('username','other'),('password','a-new-secret'),('clear_password',True)]:
         mismatch=dict(fields,**{key:value})
         before=copy.deepcopy(node)
         with pytest.raises(ValueError,match='保存失败.*不一致') as error:nodes.update_proxy(node['id'],mismatch)
         assert node==before and __import__('pathlib').Path(disk).read_bytes()==saved_disk
         assert 'private-password' not in str(error.value) and 'a-new-secret' not in str(error.value)
+    with pytest.raises(ValueError,match='不一致'):
+        nodes.update_proxy(node['id'],dict(fields,name='Different',link=link.rsplit('#',1)[0]+'#ManuallyChanged'))
+    assert node==original and __import__('pathlib').Path(disk).read_bytes()==saved_disk
     nodes.update_proxy(node['id'],dict(fields,name='New',host='other.example',password='changed',link='http://user:changed@other.example:8080#New'))
     assert node['id']==original['id'] and node['created_at']==original['created_at'] and node['host']=='other.example'
 
@@ -187,7 +230,8 @@ def test_active_node_connection_requires_stop_but_rename_does_not(tmp_path):
         try:
             async with aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True)) as client:
                 await login(client,url)
-                response=await client.post(url+'/__suite/api/proxies/update',json={'id':node['id'],'name':'new label'})
+                response=await client.post(url+'/__suite/api/proxies/update',json={'id':node['id'],'name':'new label','link':state.proxies.get_proxy_link(node),
+                    'protocol':'http','host':'node.example','port':'8080','username':'','password':''})
                 assert response.status==200 and node['name']=='new label'
                 response=await client.post(url+'/__suite/api/proxies/update',json={'id':node['id'],'host':'other.example'})
                 assert response.status==409 and (await response.json())['requires_stop']

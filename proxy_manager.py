@@ -98,6 +98,10 @@ class ProxyManager:
         link=fields.get('link','')
         if link:
             linked=self.parse_link(link,fields.get('name',item['name']))
+            if 'name' in fields and link.strip()==self.get_proxy_link(item):
+                # A node label is metadata. Keep the old connection URI and update
+                # its untouched remark, while still checking every connection field.
+                linked['name']=fields['name']
             self.check_link_consistency(linked,fields,item)
             candidate.update(linked)
         else:
