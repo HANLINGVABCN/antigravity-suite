@@ -102,10 +102,12 @@ def test_open_login_repairs_detached_login_generation_with_no_active_card(tmp_pa
 
 
 def test_detached_session_uses_its_working_environment_before_other_discovered_homes(tmp_path):
-    state,a,home=setup(tmp_path);selected=state.profiles.native_runtime.selected
-    working=dict(selected,id='b'*32,native_home=str(tmp_path/'other-working'),native_config_dir=str(tmp_path/'other-working/.config/Antigravity'))
-    state.profiles.native_runtime.detach();state.sessions.exited(working)
-    assert state.session_ops.runtime()['id']==working['id']
+    async def scenario():
+        state,a,home=setup(tmp_path);selected=state.profiles.native_runtime.selected
+        working=dict(selected,id='b'*32,native_home=str(tmp_path/'other-working'),native_config_dir=str(tmp_path/'other-working/.config/Antigravity'))
+        state.profiles.native_runtime.detach();state.sessions.exited(working)
+        assert state.session_ops.runtime()['id']==working['id']
+    asyncio.run(scenario())
 
 
 @pytest.mark.skipif(os.name=='nt',reason='Full runtime exit uses Linux shared-history symlinks')
