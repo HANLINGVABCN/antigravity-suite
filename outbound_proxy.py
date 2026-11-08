@@ -13,10 +13,11 @@ class OutboundProxy:
         self.server=None
         self.url=None
         self.connections=set()
+        self.port=0
 
     async def __aenter__(self):
         if self.upstream:
-            self.server=await asyncio.start_server(self.handle,'127.0.0.1',0,limit=65536)
+            self.server=await asyncio.start_server(self.handle,'127.0.0.1',self.port,limit=65536)
             self.url='http://127.0.0.1:%d'%self.server.sockets[0].getsockname()[1]
         return self
 

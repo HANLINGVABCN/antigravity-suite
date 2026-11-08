@@ -17,6 +17,9 @@ INSTALL_DIR=${VALUES[0]}
 DATA_DIR=${VALUES[1]}
 python3 "$SOURCE_DIR/installation_service.py" stop --plan "$SERVICE_PLAN"
 if [[ -x "$INSTALL_DIR/.venv/bin/python" ]]; then
+  if [[ -f "$INSTALL_DIR/cli_proxy.py" ]]; then
+    ANTIGRAVITY_SUITE_DATA="$DATA_DIR" "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/cli_proxy.py"
+  fi
   "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/desktop_guard.py" --restore --data-dir "$DATA_DIR"
 fi
 python3 "$SOURCE_DIR/installation_service.py" remove --plan "$SERVICE_PLAN"

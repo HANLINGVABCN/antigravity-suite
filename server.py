@@ -67,7 +67,10 @@ class SuiteState:
                 if changed:self.persist()
             self.profiles.native_runtime.refresh_installations(found['configurations'])
             for spec in self.profiles.native_runtime.installations:
-                if spec.get('available'):self.native_controls.publish(spec)
+                if spec.get('available'):
+                    self.native_controls.publish(spec)
+                    try:await asyncio.to_thread(self.profiles.cli_credentials.ensure,spec)
+                    except (OSError,ValueError) as error:self.last_error=str(error)
             if import_logins:self.initial_import_pending=True
             if self.initial_import_pending and not self.updater.busy():
                 imported=await asyncio.to_thread(self.profiles.import_installed_accounts_once,self.cfg.get('machine_name'))
@@ -162,10 +165,23 @@ class SuiteState:
                 self.pending_imports.pop(token,None)
     async def prepare_engine_proxy(self, profile):
         from outbound_proxy import OutboundProxy
+        upstream=self.proxy_url(profile)
+        if self.outbound_bridge and getattr(self.outbound_bridge,'upstream',object())==upstream and (not upstream or getattr(self.outbound_bridge,'server',None)):
+            self.publish_cli_proxy(self.session_ops.runtime(),profile,self.engine_proxy_url)
+            return self.engine_proxy_url
         if self.outbound_bridge: await self.outbound_bridge.close()
-        self.outbound_bridge=await OutboundProxy(self.proxy_url(profile)).__aenter__()
+        self.outbound_bridge=OutboundProxy(upstream)
+        self.outbound_bridge.port=int(self.cfg.get('shared_proxy_port',0))
+        await self.outbound_bridge.__aenter__()
         self.engine_proxy_url=self.outbound_bridge.url
+        if self.engine_proxy_url and not self.cfg.get('shared_proxy_port'):
+            self.cfg['shared_proxy_port']=urlsplit(self.engine_proxy_url).port;self.persist()
+        self.publish_cli_proxy(self.session_ops.runtime(),profile,self.engine_proxy_url)
         return self.engine_proxy_url
+    def publish_cli_proxy(self,native,profile=None,proxy_url=None,required=None):
+        if not native or not self.profiles.cli_proxy:return
+        if required is None:required=bool(profile and profile.get('proxy_id'))
+        self.profiles.cli_proxy.publish(native,proxy_url,required,ready=not required or bool(proxy_url),profile_id=profile['id'] if profile else None)
     async def ensure_switch_allowed(self):
         if self.service_restart.busy():raise ValueError('后台正在重启，请等待恢复')
         if self.launch_task and not self.launch_task.done():raise ValueError('正在启动档案，请等待完成')
@@ -249,6 +265,9 @@ class SuiteState:
         async with self.lock:
             await self.sync_native_login(force=True)
             old=self.active; old_profile=self.profiles.get_profile(old); old_loaded=self.loaded
+            if old!=target or (self.native_runtime_proxy_id or None)!=(p.get('proxy_id') or None):
+                native=self.session_ops.runtime()
+                if native:await asyncio.to_thread(self.profiles.cli_credentials.stop,native)
             old_running=bool(self.supervisor.process and self.supervisor.process.poll() is None)
             proxy_url=self.proxy_url(p); self.busy=True; self.supervisor.is_restarting=True
             switched=False
@@ -668,7 +687,19 @@ async def api(request):
             running=bool(s.supervisor.process and s.supervisor.process.poll() is None)
             if connection_changed and running and active and active.get('proxy_id')==proxy_id:
                 return web.json_response(dict(ok=False,error='此节点正被当前 IDE 使用。请先停止 IDE，再修改连接信息；节点 ID 和绑定保持原值。',requires_stop=True),status=409)
+            affects_cli=bool(connection_changed and active and active.get('proxy_id')==proxy_id)
+            previous=dict(item)
+            if affects_cli:
+                native=s.session_ops.runtime()
+                if native:await asyncio.to_thread(s.profiles.cli_credentials.stop,native)
             updated=await asyncio.to_thread(s.proxies.update_proxy,proxy_id,fields)
+            if affects_cli:
+                try:await s.prepare_engine_proxy(active)
+                except Exception:
+                    item.clear();item.update(previous);s.proxies._save()
+                    try:await s.prepare_engine_proxy(active)
+                    except Exception:pass
+                    raise ValueError('可能是共用代理桥重建失败，节点原配置已恢复，请检查后台运行状态')
             if connection_changed:
                 for p in s.profiles.list_profiles():
                     if p.get('proxy_id')==proxy_id:s.diagnostics.pop(p['id'],None)
@@ -841,6 +872,10 @@ async def resources(app):
     if s.discovery_enabled:
         await s.refresh_existing(import_logins=True)
         if not s.updater.busy():await s.session_ops.protect_existing()
+        if not s.updater.busy() and s.profiles.get_profile(s.active):
+            await s.prepare_engine_proxy(s.profiles.get_profile(s.active))
+        elif not s.updater.busy() and s.session_ops.runtime():
+            await s.prepare_engine_proxy(dict(id=None,proxy_id=s.cfg.get('login_proxy_id')))
         s.discovery_running=True
         async def scan_existing():
             while s.discovery_running:
@@ -890,6 +925,7 @@ async def resources(app):
 
 async def shutting_down(app):
     s=app['state']
+    if s.profiles.cli_proxy:s.profiles.cli_proxy.suspend()
     s.supervisor._running=False
     s.supervisor.is_restarting=True
     await asyncio.gather(*[ws.close(code=1001,message=b'backend restarting') for ws in list(getattr(s,'native_stream_sockets',set()))],return_exceptions=True)

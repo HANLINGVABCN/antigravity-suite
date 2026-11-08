@@ -40,6 +40,12 @@ class ProfileManager:
         self._set_home(self.home)
         from native_runtime import NativeRuntime
         self.native_runtime=NativeRuntime(self)
+        from cli_credentials import CliCredentials
+        self.cli_credentials=CliCredentials(self)
+        if os.name=='posix':
+            from cli_proxy import CliProxy
+            self.cli_proxy=CliProxy(self)
+        else:self.cli_proxy=None
     def _set_home(self, home):
         self.home = Path(home)
         self.home.mkdir(parents=True, exist_ok=True, mode=0o700)

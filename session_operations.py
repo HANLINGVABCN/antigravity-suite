@@ -78,10 +78,7 @@ class SessionOperations:
         old=s.proxies.get_proxy(proxy_id) if proxy_id else None
         if proxy_id and not old:raise ValueError('未登录环境的代理已不存在，请先恢复节点')
         s.native_runtime_proxy_id=proxy_id or None
-        from outbound_proxy import OutboundProxy
-        if s.outbound_bridge:await s.outbound_bridge.close()
-        s.outbound_bridge=await OutboundProxy(s.proxies.get_proxy_url(old) if old else None).__aenter__()
-        s.engine_proxy_url=s.outbound_bridge.url
+        s.engine_proxy_url=await s.prepare_engine_proxy(dict(id=None,proxy_id=proxy_id))
         await asyncio.to_thread(s.supervisor.start_antigravity,s.engine_proxy_url)
         s.login_environment_open=True;s.cfg['engine_stopped']=False;s.persist()
 
@@ -89,6 +86,8 @@ class SessionOperations:
         s=self.state
         async with s.lock:
             if s.sessions.in_progress():raise ValueError('登录尚未结束，请完成或取消后再退出配置')
+            current=self.runtime()
+            if current:await asyncio.to_thread(s.profiles.cli_credentials.stop,current)
             await s.sync_native_login(force=True)
             if expected_profile_id is not None and expected_profile_id!=s.active:raise ValueError('当前配置已变化，请从当前选中卡片重新退出')
             old_id=s.active;old_loaded=s.loaded;old_profile=s.profiles.get_profile(old_id)

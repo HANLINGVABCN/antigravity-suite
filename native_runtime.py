@@ -108,6 +108,10 @@ class NativeRuntime:
     def observe_login(self, force=False, native=None):
         native=native or (self.binding['native'] if self.binding else self.selected)
         if not native:return None
+        try:self.manager.cli_credentials.ensure(native)
+        except (OSError,ValueError):
+            # Keep desktop discovery usable when the optional CLI has conflicting credentials.
+            pass
         file=Path(native['native_home'])/'.gemini/jetski-standalone-oauth-token'
         token=self.manager.installed_token(file)
         if token is None and file.is_file():
@@ -158,7 +162,10 @@ class NativeRuntime:
         if not spec.get('available'):
             raise ValueError('原共用配置当前不可用，请检查本体和目录权限')
         if self.binding and self.binding['profile_id']==profile_id and self.binding['native']['id']==spec['id']:
+            self.manager.cli_credentials.ensure(spec,prefer_native=True)
             return True
+        self.manager.cli_credentials.stop(spec)
+        self.manager.cli_credentials.ensure(spec,prefer_native=True)
         home=Path(spec['native_home']);config=Path(spec['native_config_dir'])
         self.manager.history.merge_native(home/'.gemini/antigravity')
         dest=targets(home,config)
