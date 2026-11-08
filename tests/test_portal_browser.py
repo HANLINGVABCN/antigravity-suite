@@ -395,8 +395,15 @@ def test_management_restart_is_explicit_and_keeps_progress_until_response(portal
     page.get_by_role('button',name='服务设置',exact=True).click()
     pw.expect(page.locator('label[for="settings-port"]')).to_contain_text('重启后台服务生效')
     button=page.locator('#btn-service-restart');pw.expect(button).to_be_enabled()
-    page.route('**/__suite/api/system/service-restart',lambda route:route.fulfill(status=202,content_type='application/json',body='{"ok":true,"supported":true,"running_port":18888,"saved_port":18888,"port_pending":false,"job":{"job_id":"browser-restart","phase":"queued"}}'))
-    page.route('**/__suite/api/system/service-restart/status',lambda route:route.fulfill(status=200,content_type='application/json',body='{"ok":true,"supported":true,"running_port":18888,"saved_port":18888,"port_pending":false,"job":{"job_id":"browser-restart","phase":"starting","message":"正在启动后台服务"}}'))
+    accepted=[]
+    def restart_route(route):
+        accepted.append(True)
+        route.fulfill(status=202,content_type='application/json',body='{"ok":true,"supported":true,"running_port":18888,"saved_port":18888,"port_pending":false,"job":{"job_id":"browser-restart","phase":"queued"}}')
+    def restart_status(route):
+        job=dict(job_id='browser-restart',phase='starting',message='正在启动后台服务') if accepted else dict(phase='idle',message='尚未重启后台服务')
+        route.fulfill(status=200,content_type='application/json',body=json.dumps(dict(ok=True,supported=True,running_port=18888,saved_port=18888,port_pending=False,job=job)))
+    page.route('**/__suite/api/system/service-restart',restart_route)
+    page.route('**/__suite/api/system/service-restart/status',restart_status)
     button.click();pw.expect(button).to_have_text('后台重启中…');pw.expect(button).to_be_disabled()
     pw.expect(page.locator('#service-restart-status')).to_contain_text('正在启动后台服务')
 
@@ -411,7 +418,9 @@ def test_logged_out_login_entry_survives_refresh_and_starts_before_entering(port
         state.opening_login=True
         route.fulfill(status=202,content_type='application/json',body='{"ok":true}')
     page.route('**/__suite/api/system/start',start_route)
-    button.click();pw.expect(button).to_have_text('正在打开登录界面…');pw.expect(button).to_be_disabled()
+    with page.expect_response(lambda response:response.url.endswith('/__suite/api/system/start')):
+        button.click()
+    pw.expect(button).to_have_text('正在打开登录界面…');pw.expect(button).to_be_disabled()
     page.reload();pw.expect(button).to_be_visible();pw.expect(button).to_have_text('正在打开登录界面…')
     state.opening_login=False;state.login_environment_open=True;state.supervisor.active_port=45000
     page.evaluate('fetchStatus()');pw.expect(button).to_have_text('进入登录界面')
