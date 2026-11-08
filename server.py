@@ -223,18 +223,24 @@ class SuiteState:
         if self.login_environment_open and self.supervisor.active_port and not self.busy:return
         if self.launch_task and not self.launch_task.done():return
         if self.exit_task and not self.exit_task.done():raise ValueError('正在退出配置，请稍后重试')
-        if not self.sessions.state.get('waiting'):raise ValueError('请先选择需要启动的配置')
+        if not self.sessions.state.get('waiting') and self.active is not None and not self.cfg.get('native_logged_out'):
+            raise ValueError('请先退出当前配置，再打开登录界面')
         if self.installer.task and not self.installer.task.done():raise ValueError('本体操作尚未完成')
         self.opening_login=True;self.last_error=''
         async def launch():
-            async with self.lock:
-                self.busy=True;self.supervisor.is_restarting=True
-                try:
-                    await asyncio.to_thread(self.supervisor.stop_antigravity)
-                    await self.session_ops.start_empty(self.session_ops.runtime(create=True))
-                    self.cfg['login_environment']=True;self.persist()
-                except Exception as error:self.last_error=str(error)
-                finally:self.busy=False;self.supervisor.is_restarting=False;self.opening_login=False
+            try:
+                if not self.sessions.state.get('waiting'):
+                    # A deleted/detached current card can leave a credential-generation record behind.
+                    # Use the same backed-up local exit to clear only the working login.
+                    await self.session_ops.exit()
+                else:
+                    async with self.lock:
+                        self.busy=True;self.supervisor.is_restarting=True
+                        await asyncio.to_thread(self.supervisor.stop_antigravity)
+                        await self.session_ops.start_empty(self.session_ops.runtime(create=True))
+                        self.cfg['login_environment']=True;self.persist()
+            except Exception as error:self.last_error=str(error)
+            finally:self.busy=False;self.supervisor.is_restarting=False;self.opening_login=False
         self.launch_task=asyncio.create_task(launch())
     async def activate(self,target):
         p=self.profiles.get_profile(target)
@@ -710,7 +716,7 @@ async def api(request):
         s.request_start(s.active,restart=True)
         return web.json_response(dict(ok=True,status='starting'),status=202)
     if path=='system/start' and method=='POST':
-        if s.cfg.get('native_logged_out') and s.sessions.state.get('waiting'):s.request_open_login()
+        if s.cfg.get('native_logged_out') or (not s.active and not s.cfg.get('default_profile_id')):s.request_open_login()
         else:s.request_start(s.active or s.cfg.get('default_profile_id'))
         return web.json_response(dict(ok=True,status='starting'),status=202)
     if path=='system/service-restart/status' and method=='GET':return ok(**s.service_restart.status())

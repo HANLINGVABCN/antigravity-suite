@@ -87,6 +87,27 @@ def test_start_after_stopping_login_environment_keeps_waiting_and_does_not_resto
     asyncio.run(scenario())
 
 
+def test_open_login_repairs_detached_login_generation_with_no_active_card(tmp_path,monkeypatch):
+    async def scenario():
+        state,a,home=setup(tmp_path);state.active=None;state.cfg['native_logged_out']=True
+        state.sessions.restored(a['id'],state.profiles.installed_token(home/'.gemini/jetski-standalone-oauth-token'))
+        calls=[]
+        async def local_exit():
+            calls.append('exit');state.sessions.exited(state.session_ops.runtime());state.login_environment_open=True
+        monkeypatch.setattr(state.session_ops,'exit',local_exit)
+        state.request_open_login();await state.launch_task
+        assert calls==['exit'] and state.sessions.state['waiting'] and state.active is None
+        assert state.profiles.get_profile(a['id']) is not None and not state.opening_login
+    asyncio.run(scenario())
+
+
+def test_detached_session_uses_its_working_environment_before_other_discovered_homes(tmp_path):
+    state,a,home=setup(tmp_path);selected=state.profiles.native_runtime.selected
+    working=dict(selected,id='b'*32,native_home=str(tmp_path/'other-working'),native_config_dir=str(tmp_path/'other-working/.config/Antigravity'))
+    state.profiles.native_runtime.detach();state.sessions.exited(working)
+    assert state.session_ops.runtime()['id']==working['id']
+
+
 @pytest.mark.skipif(os.name=='nt',reason='Full runtime exit uses Linux shared-history symlinks')
 def test_exit_from_stopped_profile_preserves_its_proxy_for_login_environment(tmp_path,monkeypatch):
     async def scenario():

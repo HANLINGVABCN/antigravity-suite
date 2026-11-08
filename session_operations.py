@@ -20,8 +20,10 @@ class SessionOperations:
 
     def runtime(self,create=False):
         s=self.state;native=s.profiles.native_runtime
-        spec=native.binding['native'] if native.binding else native.selected or s.sessions.state.get('working')
-        if spec:return dict(spec)
+        spec=native.binding['native'] if native.binding else s.sessions.state.get('working') or native.selected
+        if spec:
+            native.validate(spec)
+            return dict(spec)
         if not create:return None
         home=s.data/'login-environment/home';home.mkdir(parents=True,exist_ok=True,mode=0o700)
         return dict(id=hashlib.sha256(str(home.resolve()).encode()).hexdigest()[:32],runtime_kind='internal-login',

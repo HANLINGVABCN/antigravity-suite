@@ -16,7 +16,7 @@
         const running=!!status?.antigravity_ready || !!core?.running;
         if(running && !window.confirm('停止反重力并保存当前配置？'))return;
         const target=status?.active_profile_id||status?.default_profile_id||lastProfile||(status?.profiles?.length===1?status.profiles[0].id:null);
-        const empty=status?.native_session?.state==='logged_out' && status?.login_sessions?.waiting_for_login;
+        const empty=status?.native_session?.state==='logged_out';
         if(!running&&!target&&!empty){window.alert('请先在配置列表选择需要启动的配置。');return;}
         pending=running?'stop':'start';render();
         try {
