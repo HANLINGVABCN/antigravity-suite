@@ -69,6 +69,39 @@ ANTIGRAVITY_SUITE_DATA=/path/to/private-data .venv/bin/python server.py
 
 服务用户必须能够读写数据目录、启动 Xvfb 并执行本体。默认 systemd 安装器使用 root；容器或手动部署可以选择专用普通用户。
 
+## 修改监听地址与端口
+
+**只改端口**：进入网页“服务设置”，修改“监听端口”，点击“保存设置”，再点击“重启后台服务”。新端口从这次后台重启开始生效；启动反重力或刷新网页不会应用端口变更。若使用反代或 SSH 转发，同时修改它们的目标端口。
+
+**改监听地址**：目前网页不提供地址编辑，需要先停止管理后台，再编辑实际数据目录下的 `config.json`，修改 `listen_host`，然后启动后台。安装结果会显示实际数据目录；普通安装默认是 `/var/lib/antigravity-suite-improved/config.json`，有 `/config` 的新容器默认是 `/config/antigravity-suite-improved/data/config.json`，已有或自定义部署以实际路径为准。
+
+只修改原文件中的对应字段，不要用下面的示例覆盖整个配置文件：
+
+```json
+"listen_host": "0.0.0.0",
+"listen_port": 18888
+```
+
+`127.0.0.1` 只接受同一机器、同一容器内的连接，同机 Nginx/Caddy 或 SSH 转发通常保留此值即可。`0.0.0.0` 接受所有 IPv4 网卡上的连接，适用于其他机器或另一个容器连接；访问时使用服务器或容器的实际 IP，不能把 `0.0.0.0` 当作访问地址。容器外访问还需有对应的端口映射或反代连接，远程入口继续使用后台验证和 HTTPS。
+
+普通 systemd 安装示例：
+
+```bash
+sudo systemctl stop antigravity-suite-improved
+sudo nano /var/lib/antigravity-suite-improved/config.json
+sudo systemctl start antigravity-suite-improved
+```
+
+实验服务器这类 `/config/keepalive` Supervisor 容器示例：
+
+```bash
+sudo supervisorctl -c /config/keepalive/supervisord.conf stop antigravity-suite-improved
+sudo nano /config/antigravity-suite-improved/data/config.json
+sudo supervisorctl -c /config/keepalive/supervisord.conf start antigravity-suite-improved
+```
+
+其他 Supervisor 部署请替换为实际主配置路径、程序名称和数据目录。先停止后台再改文件，避免运行中的后台保存旧设置覆盖手工修改。
+
 ## SSH 本地转发
 
 在本地电脑运行：
