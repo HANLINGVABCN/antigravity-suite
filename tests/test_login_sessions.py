@@ -97,6 +97,24 @@ def test_start_after_stopping_login_environment_keeps_waiting_and_does_not_resto
     asyncio.run(scenario())
 
 
+def test_manual_stop_is_persisted_and_prevents_login_environment_autoboot(tmp_path):
+    async def scenario():
+        cfg=config(tmp_path);cfg.update(engine_stopped=True,login_environment=True,native_logged_out=True)
+        app=create_app(cfg,supervisor=FakeSupervisor());s=app['state'];s.sessions.exited()
+        calls=[];s.request_open_login=lambda:calls.append('opened')
+        runner,port=await start(app)
+        try:
+            await asyncio.sleep(.05)
+            assert calls==[] and s.supervisor.process is None
+            async with aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True)) as client:
+                await login(client,'http://127.0.0.1:'+str(port))
+                response=await client.post('http://127.0.0.1:'+str(port)+'/__suite/api/system/stop')
+                assert response.status==200 and s.cfg['engine_stopped'] and not s.login_environment_open
+                assert json.loads((tmp_path/'config.json').read_text())['engine_stopped']
+        finally:await runner.cleanup()
+    asyncio.run(scenario())
+
+
 def test_open_login_repairs_detached_login_generation_with_no_active_card(tmp_path,monkeypatch):
     async def scenario():
         state,a,home=setup(tmp_path);state.active=None;state.cfg['native_logged_out']=True

@@ -163,7 +163,10 @@
     document.addEventListener('pointerdown', () => { pointerPressed = true; });
     root.addEventListener('blur', () => { pointerPressed = false; });
     for (const event of ['pointerup', 'pointercancel']) document.addEventListener(event, () => {
-        pointerPressed = false; requestAnimationFrame(() => root.renderUI?.());
+        pointerPressed = false;
+        // Do not replace the clicked button between pointerup and its click event.
+        // Navigation/start/exit handlers must run before delayed card reconciliation.
+        setTimeout(() => root.renderUI?.(),0);
     });
     document.querySelectorAll('.modal-mask').forEach(prepareDialog);
     root.PortalUI = {open, close, closeAll, showError, clearError, canRenderCards, updateCards, hasOpenDialog:() => stack.length > 0};

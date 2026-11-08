@@ -494,12 +494,12 @@ let currentStatus = null;
             fetchStatus();
         }
 
-        async function profileAction(id) {
+        function profileAction(id) {
             if (currentStatus.active_profile?.id === id && currentStatus.antigravity_ready && !currentStatus.starting_profile_id) {
                 window.location.href = "/";
                 return;
             }
-            await switchProfile(id);
+            return switchProfile(id);
         }
         async function switchProfile(id) {
             if (!coreStatus?.installed) { openCoreInstallModal(); return; }

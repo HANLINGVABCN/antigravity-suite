@@ -51,6 +51,8 @@ class SessionOperations:
         except ValueError as error:
             if '停止' not in str(error):
                 self.desktop_status=dict(installed=False,reason=str(error));return
+            if s.cfg.get('engine_stopped'):
+                self.desktop_status=dict(installed=False,reason='反重力已停止，若有手动打开的实例需关闭后才能更新桌面保护');return
             if s.active:
                 await s.activate(s.active)
             else:
@@ -81,7 +83,7 @@ class SessionOperations:
         s.outbound_bridge=await OutboundProxy(s.proxies.get_proxy_url(old) if old else None).__aenter__()
         s.engine_proxy_url=s.outbound_bridge.url
         await asyncio.to_thread(s.supervisor.start_antigravity,s.engine_proxy_url)
-        s.login_environment_open=True
+        s.login_environment_open=True;s.cfg['engine_stopped']=False;s.persist()
 
     async def exit(self,expected_profile_id=None):
         s=self.state

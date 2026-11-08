@@ -58,6 +58,7 @@ async def proxy(request):
                                       ssl=ssl_option, allow_redirects=False,
                                       auto_decompress=inject or client_script) as upstream:
             out = clean_headers(upstream.headers)
+            out['X-Accel-Buffering']='no'
             out.popall('Link',None)  # Prevent origin-supplied external preconnect/preload hints.
             location=out.get('Location')
             if location:
@@ -101,6 +102,9 @@ async def proxy(request):
                 data=re.sub(br'(<script\b[^>]*\bsrc=["\x27])(/main\.js)(?:\?[^"\x27]*)?(["\x27])',
                     lambda match:match[1]+match[2]+b'?agy_suite='+version.encode()+match[3],data,flags=re.I)
                 data = inject_privacy(data, state.active)
+                scripts=b'<script src="/__suite/stream-transport.js"></script><script src="/__suite/ide-ready.js"></script>'
+                head=re.search(br'<head\b[^>]*>',data,re.I)
+                data=data[:head.end()]+scripts+data[head.end():] if head else scripts+data
                 guard=b'<script src="/__suite/logout-guard.js"></script>'
                 if guard not in data:
                     head=re.search(br'<head\b[^>]*>',data,re.I)

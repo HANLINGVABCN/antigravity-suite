@@ -472,3 +472,27 @@ def test_logged_out_login_entry_survives_refresh_and_starts_before_entering(port
     state.opening_login=False;state.login_environment_open=True;state.supervisor.active_port=45000
     page.evaluate('fetchStatus()');pw.expect(button).to_have_text('进入登录界面')
     pw.expect(button).to_be_enabled();assert page.url.endswith('/?portal=1')
+
+
+def test_ready_profile_button_receives_click_after_pointer_release_without_refresh(portal):
+    page=portal['page'];state=portal['state'];identifier=portal['profile']['id']
+    state.active=identifier;state.supervisor.active_port=45000;page.evaluate('fetchStatus()')
+    button=page.locator('[data-launch-id="'+identifier+'"]');pw.expect(button).to_have_text('进入')
+    # Simulate a status change landing while the pointer is down.
+    button.hover();page.mouse.down();state.profiles.get_profile(identifier)['name']='Changed while pressed'
+    page.evaluate('fetchStatus()')
+    page.route('**/',lambda route:route.fulfill(status=200,content_type='text/html',body='<html><body>Native entered</body></html>'))
+    page.mouse.up();page.wait_for_url(portal['url']+'/')
+    pw.expect(page.locator('body')).to_have_text('Native entered')
+
+
+
+def test_initialization_notice_waits_for_state_and_history_instead_of_showing_empty_chat(portal):
+    page=portal['page'];page.add_script_tag(url=portal['url']+'/__suite/ide-ready.js')
+    notice=page.locator('#agy-ide-initializing');pw.expect(notice).to_be_visible()
+    page.evaluate("window.dispatchEvent(new CustomEvent('agy-native-stream',{detail:{method:'JetboxSubscribeToState',error:false}}))")
+    pw.expect(notice).to_contain_text('正在读取本地聊天列表');pw.expect(notice).to_be_visible()
+    page.evaluate("window.dispatchEvent(new CustomEvent('agy-native-stream',{detail:{method:'JetboxSubscribeToSummaries',error:false}}))")
+    pw.expect(notice).to_contain_text('正在等待账号状态')
+    page.evaluate("window.dispatchEvent(new CustomEvent('agy-native-stream',{detail:{method:'GetAuthStatus',error:false}}))")
+    pw.expect(notice).to_be_hidden()

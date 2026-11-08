@@ -79,7 +79,7 @@ class SuiteState:
             # Recover only the instance matching the active profile's exact HOME/config.
             # Desktop-launched native profiles are visible even before the project starts them.
             running=bool(self.supervisor.process and self.supervisor.process.poll() is None)
-            if not running and not self.starting_profile_id and not self.busy:
+            if not running and not self.starting_profile_id and not self.busy and not self.cfg.get('engine_stopped'):
                 candidates=[]
                 if self.profiles.get_profile(self.active):candidates.append(self.profiles.get_profile(self.active))
                 common=self.profiles.native_runtime.binding
@@ -294,7 +294,7 @@ class SuiteState:
                 self.native_runtime_proxy_id=p.get('proxy_id') or None;self.native_requires_restart=False
                 self.cfg['native_logged_out']=False
                 self.cfg['login_environment']=False;self.login_environment_open=False
-                self.active=target; self.last_error=''; self.persist()
+                self.active=target; self.last_error='';self.cfg['engine_stopped']=False; self.persist()
             except Exception as e:
                 self.last_error=str(e)
                 await asyncio.to_thread(self.supervisor.stop_antigravity)
@@ -713,6 +713,7 @@ async def api(request):
         async with s.lock:
             await s.ensure_switch_allowed()
             await s.stop_and_save()
+            s.cfg['engine_stopped']=True;s.login_environment_open=False;s.persist()
         return ok()
     if path=='system/restart' and method=='POST':
         s.request_start(s.active,restart=True)
@@ -816,6 +817,11 @@ async def page(request):
     if request.path=='/__suite/service-restart.js': return web.FileResponse(s.static/'service-restart.js')
     if request.path=='/__suite/update.js': return web.FileResponse(s.static/'update.js')
     if request.path=='/__suite/logout-guard.js': return web.FileResponse(s.static/'logout-guard.js')
+    if request.path=='/__suite/stream-transport.js': return web.FileResponse(s.static/'stream-transport.js')
+    if request.path=='/__suite/ide-ready.js': return web.FileResponse(s.static/'ide-ready.js')
+    if request.path=='/__suite/native-stream':
+        from stream_transport import subscription
+        return await subscription(request)
     if request.path=='/__suite/portal.css': return web.FileResponse(s.static/'portal.css')
     if request.path=='/__suite/portal' or (request.path=='/' and 'portal' in request.query):
         return web.FileResponse(s.static/'portal.html',headers={'Cache-Control':'no-store'})
@@ -828,6 +834,8 @@ async def page(request):
 async def resources(app):
     s=app['state']
     s.http=aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None,sock_connect=10),
+                                 auto_decompress=False,cookie_jar=aiohttp.DummyCookieJar(),trust_env=False)
+    s.stream_http=aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=64),timeout=aiohttp.ClientTimeout(total=None,sock_connect=10),
                                  auto_decompress=False,cookie_jar=aiohttp.DummyCookieJar(),trust_env=False)
     boot=None
     if s.discovery_enabled:
@@ -844,10 +852,12 @@ async def resources(app):
     async def autoboot():
         try:
             if s.cfg.get('login_environment') and s.sessions.state.get('waiting'):
+                if s.cfg.get('engine_stopped'):return
                 s.request_open_login();return
             if s.cfg.get('native_logged_out'):return
             resumed=s.cfg.pop('restart_resume_profile_id',None)
             if resumed:s.persist()
+            if s.cfg.get('engine_stopped') and not resumed:return
             target=resumed or s.cfg.get('default_profile_id')
             common=s.profiles.native_runtime
             migrate=bool(common.selected and target and (not common.binding or common.binding['profile_id']!=target))
@@ -872,6 +882,7 @@ async def resources(app):
         await s.stop_and_save()
         await asyncio.to_thread(s.supervisor.close)
     await s.http.close()
+    await s.stream_http.close()
     if s.outbound_bridge: await s.outbound_bridge.close()
     for item in s.pending_imports.values():Path(item['path']).unlink(missing_ok=True)
     s.pending_imports.clear()
@@ -881,6 +892,7 @@ async def shutting_down(app):
     s=app['state']
     s.supervisor._running=False
     s.supervisor.is_restarting=True
+    await asyncio.gather(*[ws.close(code=1001,message=b'backend restarting') for ws in list(getattr(s,'native_stream_sockets',set()))],return_exceptions=True)
 
 def create_app(cfg=None,profile_mgr=None,supervisor=None):
     cfg=cfg or load_config()
