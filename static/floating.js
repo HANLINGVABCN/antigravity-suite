@@ -288,7 +288,6 @@
         <div class="ag-footer">
             <button class="ag-btn ag-btn-secondary" id="ag-btn-portal">🚪 返回完整配置大厅</button>
             <button class="ag-btn ag-btn-secondary" id="ag-btn-restart">🔄 重启当前核心引擎</button>
-            <button class="ag-btn ag-btn-primary" id="ag-btn-exit-session">退出当前配置</button>
         </div>
     `;
     document.body.appendChild(drawer);
@@ -331,12 +330,12 @@
         if (!confirm("确定要重启当前 Antigravity 引擎吗？")) return;
         triggerSwitch(null, "重启核心引擎");
     });
-    document.getElementById('ag-btn-exit-session').addEventListener('click',async()=>{
+    async function exitCurrentProfile(profileId){
         closeDrawer();mask.classList.add('active');
         document.getElementById('ag-mask-title').textContent='正在退出当前配置…';
         document.getElementById('ag-mask-desc').textContent='保存存档，清理当前登录，并打开未登录界面。';
         try {
-            await suiteFetch('/__suite/api/sessions/exit',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+            await suiteFetch('/__suite/api/sessions/exit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({profile_id:profileId})});
             let attempts=0;
             const timer=setInterval(async()=>{
                 try {
@@ -347,7 +346,7 @@
                 if(++attempts>90){clearInterval(timer);mask.classList.remove('active');alert('退出仍在进行，请返回配置面板查看状态。');}
             },1000);
         } catch(error){mask.classList.remove('active');alert(error.message);}
-    });
+    }
 
     async function loadSuiteStatus() {
         try {
@@ -385,12 +384,12 @@
                         <div style="font-size:11px; color:#94a3b8;">${escapeHtml(p.email || '未登录')}</div>
                     </div>
                     <div>
-                        ${isCur ? '' : `<button class="ag-btn ag-btn-primary" data-id="${p.id}">切换</button>`}
+                        ${isCur ? `<button class="ag-btn ag-btn-primary" data-exit-profile="${p.id}" ${data.busy||data.starting_profile_id?'disabled':''}>退出配置</button>` : `<button class="ag-btn ag-btn-primary" data-id="${p.id}">切换</button>`}
                     </div>
                 `;
                 if (!isCur) {
                     item.querySelector("button").addEventListener("click", () => triggerSwitch(p.id, p.name));
-                }
+                } else item.querySelector('button').addEventListener('click',()=>exitCurrentProfile(p.id));
                 listEl.appendChild(item);
             });
         } catch (e) {

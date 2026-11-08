@@ -53,7 +53,7 @@ class NativeControl:
     def minimal_status(self):
         s=self.state;status=s.status()
         result={key:status.get(key) for key in ('active_profile','active_profile_id','profiles','active_proxy','antigravity_ready',
-            'starting_profile_id','default_profile_id','native_session','exit_state','login_environment_ready','login_sessions')}
+            'starting_profile_id','default_profile_id','native_session','exit_state','login_environment_ready','login_sessions','busy')}
         keep={'id','name','email','proxy_id','created_at','last_used_at'}
         result['profiles']=[{k:v for k,v in p.items() if k in keep} for p in result['profiles']]
         if result['active_profile']:result['active_profile']={k:v for k,v in result['active_profile'].items() if k in keep}

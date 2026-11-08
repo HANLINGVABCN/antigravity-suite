@@ -19,7 +19,7 @@
         <div class="header-actions">
             <button class="btn btn-secondary" id="btn-suite-update" onclick="openSuiteUpdate()">更新项目</button>
             <button class="btn btn-primary" id="btn-core-manage" disabled onclick="openCoreInstallModal()">检测反重力…</button>
-            <button class="btn btn-secondary" onclick="openServiceSettings()">服务设置</button><button class="btn btn-secondary" id="btn-exit-session" onclick="exitCurrentSession()">退出配置</button><button class="btn btn-secondary" id="btn-engine-toggle" onclick="stopEngine()">启动反重力</button><button class="btn btn-secondary" onclick="logout()">退出后台</button>
+            <button class="btn btn-secondary" onclick="openServiceSettings()">服务设置</button><button class="btn btn-secondary" id="btn-service-restart-header" onclick="restartManagementService(false)" disabled>重启后台服务</button><button class="btn btn-secondary" id="btn-engine-toggle" onclick="stopEngine()">启动反重力</button><button class="btn btn-secondary" onclick="logout()">退出后台</button><span id="service-restart-header-status" role="status" hidden style="font-size:12px;"></span>
         </div>
     </header>
     <div class="overview-strip" aria-label="运行状态">

@@ -83,11 +83,12 @@ class SessionOperations:
         await asyncio.to_thread(s.supervisor.start_antigravity,s.engine_proxy_url)
         s.login_environment_open=True
 
-    async def exit(self):
+    async def exit(self,expected_profile_id=None):
         s=self.state
         async with s.lock:
             if s.sessions.in_progress():raise ValueError('登录尚未结束，请完成或取消后再退出配置')
             await s.sync_native_login(force=True)
+            if expected_profile_id is not None and expected_profile_id!=s.active:raise ValueError('当前配置已变化，请从当前选中卡片重新退出')
             old_id=s.active;old_loaded=s.loaded;old_profile=s.profiles.get_profile(old_id)
             old_requires_restart=s.native_requires_restart
             old_sessions=copy.deepcopy(s.sessions.state)

@@ -318,6 +318,7 @@ def test_exit_progress_and_login_entry_are_clear_and_reachable(portal):
     state.exit_state=dict(phase='saving',message='正在保存登录存档')
     page.reload()
     pw.expect(page.locator('#btn-exit-session')).to_be_disabled()
+    assert page.locator('header #btn-exit-session').count()==0
     pw.expect(page.locator('#google-auth-notice')).to_contain_text('正在保存登录存档')
     state.active=None;state.cfg['native_logged_out']=True;state.login_environment_open=True;state.supervisor.active_port=45000
     state.exit_state=dict(phase='ready',message='已退出配置')
@@ -327,6 +328,52 @@ def test_exit_progress_and_login_entry_are_clear_and_reachable(portal):
     page.locator('#google-auth-notice').get_by_role('button',name='进入登录界面').click(trial=True)
     pw.expect(page.locator('#logout-guard-status')).to_contain_text('桌面退出保护已验证')
     pw.expect(page.locator('#profile-container [data-card-id]')).to_have_count(1)
+
+
+def test_exit_is_only_in_current_card_and_restart_has_header_entry(portal):
+    page=portal['page'];state=portal['state'];first=portal['profile']
+    second=state.profiles.create_profile('Second',email='second@example.invalid')
+    state.active=first['id'];page.reload()
+    pw.expect(page.locator('#profile-container [data-exit-profile]')).to_have_count(1)
+    current=page.locator('#profile-container [data-card-id="'+first['id']+'"]')
+    pw.expect(current.get_by_role('button',name='退出配置',exact=True)).to_be_visible()
+    assert page.locator('header [data-exit-profile]').count()==0
+    state.active=second['id'];page.evaluate('fetchStatus()')
+    pw.expect(page.locator('[data-exit-profile]')).to_have_attribute('data-exit-profile',second['id'])
+    header=page.locator('#btn-service-restart-header');pw.expect(header).to_be_enabled()
+    accepted=[]
+    def restart(route):
+        accepted.append(True);route.fulfill(status=202,content_type='application/json',body='{"ok":true,"supported":true,"running_port":18888,"saved_port":18888,"port_pending":false,"job":{"job_id":"header-restart","phase":"queued"}}')
+    def restart_status(route):
+        job=dict(job_id='header-restart',phase='starting',message='正在重启后台') if accepted else dict(phase='idle',message='尚未重启')
+        route.fulfill(status=200,content_type='application/json',body=json.dumps(dict(ok=True,supported=True,running_port=18888,saved_port=18888,port_pending=False,job=job)))
+    page.route('**/__suite/api/system/service-restart',restart)
+    page.route('**/__suite/api/system/service-restart/status',restart_status)
+    header.click();pw.expect(header).to_have_text('后台重启中…');pw.expect(header).to_be_disabled()
+    assert page.locator('#modal-service-settings').is_hidden()
+
+
+def test_sign_out_warning_dismissal_never_runs_original_ui_handler(portal):
+    page=portal['page']
+    page.add_script_tag(url=portal['url']+'/__suite/logout-guard.js')
+    page.evaluate('''()=>{
+        window.logoutFixture={signedIn:true,handlerRuns:0,drawerOpens:0};
+        const panel=document.createElement('section');panel.innerHTML='<div>Email <span>dummy@example.invalid</span><button id="native-signout">Sign Out</button></div><button id="plugin-disconnect">Disconnect</button><button id="ag-floating-btn">Panel</button>';
+        document.body.append(panel);
+        document.getElementById('native-signout').onclick=async()=>{logoutFixture.handlerRuns++;try{await fetch('/exa.language_server_pb.LanguageServerService/AuthLogout',{method:'POST'})}finally{logoutFixture.signedIn=false}};
+        document.getElementById('ag-floating-btn').onclick=()=>{logoutFixture.drawerOpens++};
+        document.getElementById('plugin-disconnect').onclick=()=>{logoutFixture.pluginClicked=true};
+    }''')
+    dialogs=[]
+    def dismiss(dialog):dialogs.append(dialog.message);dialog.accept()
+    page.on('dialog',dismiss)
+    page.locator('#native-signout').click()
+    page.locator('#native-signout').focus();page.keyboard.press('Enter')
+    page.locator('#plugin-disconnect').click()
+    actual=page.evaluate('logoutFixture')
+    assert actual==dict(signedIn=True,handlerRuns=0,drawerOpens=0,pluginClicked=True)
+    assert len(dialogs)==2 and all('请返回配置面板' in d for d in dialogs)
+    assert page.url.endswith('/?portal=1')
 
 
 def test_slow_import_keeps_feedback_visible_and_failure_remains_visible(portal):

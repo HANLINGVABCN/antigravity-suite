@@ -88,6 +88,11 @@ async def proxy(request):
                     chunks.extend(chunk)
                     if len(chunks) > 16 * 1024 * 1024: raise ValueError('IDE 首页超过大小限制')
                 data = bytes(chunks)
+                version=(state.static.parent/'VERSION').read_text(encoding='utf-8').strip()
+                # Old cached client bundles may have only the request-level fallback guard.
+                # Version the native entry script so a refresh loads the full action guard.
+                data=re.sub(br'(<script\b[^>]*\bsrc=["\x27])(/main\.js)(?:\?[^"\x27]*)?(["\x27])',
+                    lambda match:match[1]+match[2]+b'?agy_suite='+version.encode()+match[3],data,flags=re.I)
                 data = inject_privacy(data, state.active)
                 guard=b'<script src="/__suite/logout-guard.js"></script>'
                 if guard not in data:

@@ -20,7 +20,7 @@ from server import create_app
 
 FIXTURE='''globalThis.AuthFixture=class {
 async loginWithRedirect(a){let g=await this._lsClient.login({});var e=g.authResult;if(e?.hasValidAuth)this.result=e;}
-async logout(){this.isLoggingOut=true;await this._lsClient.authLogout({});this.result=null;}
+async logout(){this.isLoggingOut=true;try{await this._lsClient.authLogout({});}finally{this.result=null;}}
 };'''
 
 
@@ -70,6 +70,16 @@ def test_unfinished_login_cannot_overwrite_previous_session_on_service_stop(tmp_
         with pytest.raises(ValueError):state.request_start(a['id'])
         await state.stop_and_save()
         assert store.read_bytes()==saved and len(manager.list_profiles())==1
+    asyncio.run(scenario())
+
+
+def test_stale_profile_card_cannot_exit_the_current_other_profile(tmp_path):
+    async def scenario():
+        state,a,home=setup(tmp_path)
+        with pytest.raises(ValueError,match='当前选中的配置已变化'):state.request_exit('b'*32)
+        assert state.exit_task is None and state.active==a['id']
+        with pytest.raises(ValueError,match='当前配置已变化'):await state.session_ops.exit('b'*32)
+        assert state.active==a['id'] and state.supervisor.process is not None
     asyncio.run(scenario())
 
 
@@ -178,6 +188,7 @@ def test_guard_preserves_asar_and_inline_sandbox_preload_updates_idempotently(tm
 def test_client_transform_parity_and_logout_never_changes_auth_or_calls_rpc(tmp_path,fixture):
     source,supported=transform_client(fixture)
     assert supported
+    assert 'finally' not in source[source.index('async logout(){'):source.index('};',source.index('async logout(){'))]
     script=Path(__file__).resolve().parents[1]/'static/client-transform.js'
     node='const t=require('+json.dumps(str(script))+');process.stdout.write(JSON.stringify(t.transform('+json.dumps(fixture)+')));'
     native=json.loads(subprocess.check_output(['node','-e',node],text=True))
@@ -201,7 +212,7 @@ def test_gateway_blocks_auth_logout_before_any_upstream_request(tmp_path):
         received=[]
         async def backend(request):
             received.append(request.path)
-            return web.Response(text='<html><head data-test="yes"></head><body>Fixture</body></html>',content_type='text/html')
+            return web.Response(text='<html><head data-test="yes"><script src="/main.js?old=1"></script></head><body>Fixture</body></html>',content_type='text/html')
         upstream=web.Application();upstream.router.add_route('*','/{tail:.*}',backend);br,bp=await start(upstream)
         app=create_app(config(tmp_path),supervisor=FakeSupervisor(bp));sr,sp=await start(app);url='http://127.0.0.1:'+str(sp)
         try:
@@ -213,6 +224,7 @@ def test_gateway_blocks_auth_logout_before_any_upstream_request(tmp_path):
                 assert received==[]
                 page=await(await c.get(url+'/')).text()
                 assert '<head data-test="yes"><script src="/__suite/logout-guard.js">' in page
+                assert '/main.js?agy_suite=' in page and '?old=1' not in page
                 # Unrelated sign-outs remain usable.
                 assert (await c.post(url+'/plugin/logout')).status==200
         finally:await sr.cleanup();await br.cleanup()

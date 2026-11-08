@@ -14,7 +14,8 @@ function endOfMethod(source, start) {
     throw new Error('无法识别客户端认证方法');
 }
 function transform(source, bootstrap = '', dock = '') {
-    if (source.includes('__AGY_SESSION_GUARD_V1__')) return {source,supported:true};
+    if (source.includes('__AGY_SESSION_GUARD_V2__')) return {source,supported:true};
+    if (source.includes('__AGY_SESSION_GUARD_V1__')) return {source,supported:false};
     const logout = 'async logout(){', login = 'async loginWithRedirect(';
     if (source.split(logout).length !== 2 || source.split(login).length !== 2) return {source,supported:false};
     const a = source.indexOf(logout), aEnd = endOfMethod(source,a);
@@ -29,10 +30,10 @@ function transform(source, bootstrap = '', dock = '') {
     method = method.slice(0,opening+1)+'let __agyLoginEvent=await globalThis.__AGY_SESSION__.begin();let __agyLoginFinished=false;try{'+method.slice(opening+1);
     method = method.replace(result[0],result[0]+'__agyLoginFinished=true;await globalThis.__AGY_SESSION__.complete(__agyLoginEvent,!!'+result[1]+'?.hasValidAuth);');
     method=method.slice(0,-1)+'}finally{if(!__agyLoginFinished)await globalThis.__AGY_SESSION__.complete(__agyLoginEvent,false);}}';
-    const replacements = [[b,bEnd,method],[a,a+logout.length,logout+'await globalThis.__AGY_SESSION__.warn();return;']].sort((x,y)=>y[0]-x[0]);
+    const replacements = [[b,bEnd,method],[a,aEnd,logout+'await globalThis.__AGY_SESSION__.warn();}']].sort((x,y)=>y[0]-x[0]);
     for (const [start,end,value] of replacements) source=source.slice(0,start)+value+source.slice(end);
     const tail=dock?'\n(()=>{const install=()=>{'+dock+'};document.readyState==="loading"?document.addEventListener("DOMContentLoaded",install,{once:true}):install();})();':'';
-    return {source:'/* __AGY_SESSION_GUARD_V1__ */\n'+bootstrap+'\n'+source+tail,supported:true};
+    return {source:'/* __AGY_SESSION_GUARD_V2__ */\n'+bootstrap+'\n'+source+tail,supported:true};
 }
 function blockedLogout(url) {
     try { return /^\/exa\.language_server_pb\.LanguageServerService\/AuthLogout\/?$/i.test(decodeURIComponent(new URL(url).pathname)); }

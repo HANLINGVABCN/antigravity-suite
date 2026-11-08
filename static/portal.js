@@ -65,9 +65,6 @@ let currentStatus = null;
                 protection?.installed?'桌面退出保护已安装，等待客户端验证。退出请用“退出配置”。':(protection?.reason||'正在检查桌面退出保护');
             const phase=currentStatus?.exit_state?.phase;
             const exiting=['queued','saving','opening'].includes(phase);
-            const exitButton=document.getElementById('btn-exit-session');
-            exitButton.disabled=exiting || !currentStatus?.active_profile;
-            exitButton.textContent=exiting?'正在退出…':'退出配置';
             if(exiting || phase==='error') {
                 notice.className='summary '+(phase==='error'?'abnormal':'pending');
                 message.textContent=currentStatus.exit_state.message;return;
@@ -123,8 +120,9 @@ let currentStatus = null;
         async function stopEngine() {
             await SuiteCoreToggle.toggle();
         }
-        async function exitCurrentSession() {
-            await fetch('/__suite/api/sessions/exit',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+        async function exitCurrentSession(profileId) {
+            if(profileId!==currentStatus?.active_profile?.id){alert('当前配置已变化，请重新选择当前卡片。');return;}
+            await fetch('/__suite/api/sessions/exit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({profile_id:profileId})});
             await fetchStatus();
         }
         async function editProfileFile(id, path) {
@@ -244,6 +242,7 @@ let currentStatus = null;
                             <button class="btn btn-secondary" onclick="openEditModal('${p.id}')">📝 详情与编辑</button>
                             <button class="btn btn-secondary" onclick="toggleDefault('${p.id}')">${isDef ? '取消默认' : '⭐️ 设为开机默认'}</button>
                             <button class="btn btn-secondary" onclick="exportProfile('${p.id}')">📤 导出</button>
+                            ${isCur?`<button class="btn btn-danger" id="btn-exit-session" data-exit-profile="${p.id}" onclick="exitCurrentSession('${p.id}')" ${currentStatus.busy||currentStatus.starting_profile_id||['queued','saving','opening'].includes(currentStatus.exit_state?.phase)?'disabled':''}>${['queued','saving','opening'].includes(currentStatus.exit_state?.phase)?'正在退出…':'退出配置'}</button>`:''}
                             <button class="btn btn-danger" onclick="deleteProfile('${p.id}')">🗑️ 删除</button>
                         </div>
                     `;

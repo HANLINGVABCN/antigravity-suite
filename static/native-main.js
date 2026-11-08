@@ -60,7 +60,7 @@ async function warn(event,identifier) {
     const target=event?.sender||webContents.fromId(identifier);
     if(!target || !roots.has(target.id))return;
     // Use a renderer dialog: GTK system dialogs can crash in restricted desktop containers.
-    await target.executeJavaScript(`(()=>{let d=document.getElementById('agy-logout-warning');if(!d){d=document.createElement('dialog');d.id='agy-logout-warning';d.style.cssText='max-width:440px;padding:24px;border:2px solid #f59e0b;border-radius:12px;background:#172033;color:#f8fafc;z-index:2147483647;line-height:1.7';const p=document.createElement('p');p.textContent=${JSON.stringify(warning)};const b=document.createElement('button');b.textContent='返回配置面板';b.style.cssText='padding:10px 18px;margin-top:16px;cursor:pointer';b.onclick=()=>{d.close();document.getElementById('ag-floating-btn')?.click()};d.append(p,b);document.body.append(d)}if(!d.open)d.showModal()})();`);
+    await target.executeJavaScript(`(()=>{let d=document.getElementById('agy-logout-warning');if(!d){d=document.createElement('dialog');d.id='agy-logout-warning';d.style.cssText='max-width:440px;padding:24px;border:2px solid #f59e0b;border-radius:12px;background:#172033;color:#f8fafc;z-index:2147483647;line-height:1.7';const p=document.createElement('p');p.textContent=${JSON.stringify(warning)};const b=document.createElement('button');b.textContent='确定';b.style.cssText='padding:10px 18px;margin-top:16px;cursor:pointer';b.onclick=()=>d.close();d.append(p,b);document.body.append(d)}if(!d.open)d.showModal()})();`);
 }
 function installSession(s) {
     if(installedSessions.has(s))return;installedSessions.add(s);

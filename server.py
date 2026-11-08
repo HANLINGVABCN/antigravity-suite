@@ -327,14 +327,16 @@ class SuiteState:
         finally:
             self.busy=False; self.supervisor.is_restarting=False
 
-    def request_exit(self):
+    def request_exit(self, expected_profile_id=None):
+        if expected_profile_id is not None and expected_profile_id!=self.active:
+            raise ValueError('当前选中的配置已变化，请从当前卡片重新退出')
         if self.sessions.in_progress():raise ValueError('登录尚未结束，请完成或取消后再退出配置')
         if self.exit_task and not self.exit_task.done():return self.exit_state
         if self.launch_task and not self.launch_task.done():raise ValueError('正在启动配置，请稍后退出')
         if self.installer.task and not self.installer.task.done():raise ValueError('本体操作尚未完成')
         self.exit_state=dict(phase='queued',message='正在退出当前配置')
         async def run():
-            try:await self.session_ops.exit()
+            try:await self.session_ops.exit(expected_profile_id)
             except Exception:
                 self.exit_state.update(phase='error',message='可能是登录缓存、运行环境或原生保护不兼容，退出未完成；存档保留。')
         self.exit_task=asyncio.create_task(run())
@@ -470,7 +472,7 @@ async def api(request):
         async with s.lock:
             profile_id=await s.session_ops.complete(d.get('intent_id',''),d.get('valid_auth',False))
             return ok(profile_id=profile_id)
-    if path=='sessions/exit' and method=='POST':return web.json_response(dict(ok=True,state=s.request_exit()),status=202)
+    if path=='sessions/exit' and method=='POST':return web.json_response(dict(ok=True,state=s.request_exit(d.get('profile_id'))),status=202)
     if path=='system/update/status' and method=='GET': return ok(**s.updater.status())
     if path=='system/update/check' and method=='POST':
         if s.updater.busy():return ok(**s.updater.status())
@@ -781,6 +783,7 @@ async def page(request):
             current=s.session_ops.runtime()
             if not current or current.get('id')!=spec['id']:raise web.HTTPForbidden()
             s.session_ops.desktop_status['renderer_ready']=True
+            s.session_ops.desktop_status['renderer_guard_version']=fields.get('guard_version',1)
             return web.json_response(dict(ok=True))
         current=s.session_ops.runtime()
         if current and current.get('id')!=spec['id']:return web.json_response(dict(ok=False,error='此窗口不是当前配置的运行环境，请返回配置面板'),status=409)
@@ -795,7 +798,7 @@ async def page(request):
             async with s.lock:
                 identifier=await s.session_ops.complete(fields.get('intent_id',''),fields.get('valid_auth',False))
                 return web.json_response(dict(ok=True,profile_id=identifier))
-        if operation=='exit':return web.json_response(dict(ok=True,state=s.request_exit()),status=202)
+        if operation=='exit':return web.json_response(dict(ok=True,state=s.request_exit(fields.get('profile_id'))),status=202)
         if operation=='switch':
             identifier=fields.get('profile_id')
             if not any(p['id']==identifier for p in s.profiles.list_profiles()):raise web.HTTPBadRequest()
