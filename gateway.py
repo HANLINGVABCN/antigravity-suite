@@ -6,7 +6,8 @@ from aiohttp import ClientError, WSMsgType, web
 from multidict import CIMultiDict
 from yarl import URL
 from privacy import CLIENT_IP_HEADERS, inject_privacy, privacy_headers
-from logout_protection import blocks_logout,transform_client,WARNING
+from logout_protection import blocks_logout,WARNING
+from client_assets import ClientAssets,script_response
 
 HOP = {'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
        'te', 'trailer', 'transfer-encoding', 'upgrade'}
@@ -45,7 +46,11 @@ async def proxy(request):
         return await websocket(request, url, headers, ssl_option)
     inject = request.method == 'GET' and (request.path == '/' or 'text/html' in request.headers.get('Accept', ''))
     client_script=request.method=='GET' and request.path=='/main.js'
-    if inject or client_script: headers['Accept-Encoding'] = 'identity'
+    if inject:headers['Accept-Encoding']='identity'
+    if client_script:
+        headers['Accept-Encoding']='gzip'
+        # Browser validators refer to the guarded body, never the original vendor script.
+        for key in ('If-None-Match','If-Modified-Since','Range','If-Range'):headers.popall(key,None)
     body = request.content.iter_chunked(65536) if request.can_read_body else None
     response = None
     try:
@@ -67,11 +72,13 @@ async def proxy(request):
                     chunks.extend(chunk)
                     if len(chunks)>32*1024*1024:raise ValueError('客户端脚本超过大小限制')
                 bootstrap=(state.static/'logout-guard.js').read_text(encoding='utf-8')
-                source,supported=transform_client(chunks.decode('utf-8'),bootstrap)
-                state.session_ops.desktop_status['web_verified']=supported
-                for key in ('Content-Length','Content-Encoding','ETag','Content-MD5'):out.popall(key,None)
-                out['Cache-Control']='no-store'
-                return web.Response(body=source.encode('utf-8'),status=200,headers=out)
+                cache=getattr(state,'client_assets',None)
+                if cache is None:cache=state.client_assets=ClientAssets()
+                process=state.supervisor.process
+                context=(state.active,port,getattr(process,'pid',None),getattr(process,'identity',None))
+                entry=await cache.guarded_script(bytes(chunks),bootstrap,context)
+                state.session_ops.desktop_status['web_verified']=entry['supported']
+                return script_response(request,entry,out)
             # Namespace browser cookies too; switching profiles must not reuse them.
             values=out.popall('Set-Cookie',[])
             for value in values:
