@@ -36,22 +36,28 @@ class ProxyManager:
         return None
 
     @staticmethod
+    def normalize_protocol(protocol):
+        if not isinstance(protocol,str):raise ValueError('协议必须是字符串')
+        value=protocol.lower().strip()
+        return {'ss5':'socks5','socks':'socks5','socks5h':'socks5'}.get(value,value)
+
+    @staticmethod
     def public_proxy(item, reveal_password=False):
         if not item: raise ValueError('代理节点不存在')
         result={k:v for k,v in item.items() if k!='password'}
+        result['protocol']=ProxyManager.normalize_protocol(item.get('protocol','http'))
         result['has_password']=bool(item.get('password'))
         if reveal_password: result['password']=item.get('password','')
         return result
 
     @staticmethod
-    def validate_fields(name, protocol, host, port, username='', password=''):
+    def validate_fields(name, protocol, host, port, username='', password='', *, allow_legacy=False):
         if not all(isinstance(value,str) for value in (name,protocol,host,username,password)):
             raise ValueError('节点文本字段必须是字符串')
-        protocol=protocol.lower().strip()
-        protocol={'ss5':'socks5','socks':'socks5'}.get(protocol,protocol)
+        protocol=ProxyManager.normalize_protocol(protocol)
         host=host.strip().strip('[]')
-        if protocol not in ('http','https','socks4','socks4a','socks5','socks5h'):
-            raise ValueError('支持 HTTP、HTTPS、SOCKS4 和 SOCKS5；其他协议请通过客户端转换为 HTTP/SOCKS 端口')
+        if protocol not in ('http','https','socks5') and not (allow_legacy and protocol in ('socks4','socks4a')):
+            raise ValueError('仅支持 HTTP、HTTPS 和 SOCKS5；其他节点请先转换为 HTTP 或 SOCKS5 端口')
         try:
             if isinstance(port,bool) or isinstance(port,float):raise ValueError()
             port=int(port)
@@ -77,17 +83,18 @@ class ProxyManager:
         return item
 
     @staticmethod
-    def parse_link(row, fallback_name='导入节点'):
+    def parse_link(row, fallback_name='导入节点', *, allow_legacy=False):
         if not isinstance(row,str) or not row.strip() or len(row.splitlines())!=1:
             raise ValueError('编辑节点时只能填写一个链接')
         parsed=urllib.parse.urlsplit(row.strip() if '://' in row else 'http://'+row.strip())
-        if parsed.scheme not in ('http','https','socks4','socks4a','socks5','socks5h','ss5'):
-            raise ValueError('节点链接协议暂不支持，可用外部客户端转换为 HTTP/SOCKS 端口')
+        protocol=ProxyManager.normalize_protocol(parsed.scheme)
+        if protocol not in ('http','https','socks5') and not (allow_legacy and protocol in ('socks4','socks4a')):
+            raise ValueError('节点链接仅支持 HTTP、HTTPS 和 SOCKS5')
         if parsed.path not in ('','/') or parsed.query or not parsed.hostname:
             raise ValueError('节点链接无效')
         port=parsed.port or (443 if parsed.scheme=='https' else 8080 if parsed.scheme=='http' else 1080)
         return ProxyManager.validate_fields(urllib.parse.unquote(parsed.fragment) or fallback_name,
-            parsed.scheme,parsed.hostname,port,urllib.parse.unquote(parsed.username or ''),urllib.parse.unquote(parsed.password or ''))
+            protocol,parsed.hostname,port,urllib.parse.unquote(parsed.username or ''),urllib.parse.unquote(parsed.password or ''),allow_legacy=allow_legacy)
 
     def prepare_update(self, proxy_id, fields):
         item=self.get_proxy(proxy_id)
@@ -95,9 +102,10 @@ class ProxyManager:
         allowed={'name','protocol','host','port','username','password','clear_password','link'}
         if set(fields)-allowed:raise ValueError('节点 ID 和创建时间不可修改')
         candidate=copy.deepcopy(item)
+        legacy=item.get('protocol') in ('socks4','socks4a')
         link=fields.get('link','')
         if link:
-            linked=self.parse_link(link,fields.get('name',item['name']))
+            linked=self.parse_link(link,fields.get('name',item['name']),allow_legacy=legacy)
             if 'name' in fields and link.strip()==self.get_proxy_link(item):
                 # A node label is metadata. Keep the old connection URI and update
                 # its untouched remark, while still checking every connection field.
@@ -109,7 +117,8 @@ class ProxyManager:
                 if key in fields:candidate[key]=fields[key]
             if fields.get('clear_password') is True:candidate['password']=''
             elif fields.get('password') not in (None,''):candidate['password']=fields['password']
-        candidate.update(self.validate_fields(**{key:candidate.get(key,'') for key in ('name','protocol','host','port','username','password')}))
+        keep_legacy=legacy and candidate.get('protocol')==item.get('protocol')
+        candidate.update(self.validate_fields(**{key:candidate.get(key,'') for key in ('name','protocol','host','port','username','password')},allow_legacy=keep_legacy))
         return candidate
 
     @staticmethod
@@ -124,7 +133,8 @@ class ProxyManager:
                 manual['password']=existing.get('password','')
             else:manual['password']=fields.get('password','')
             checked.append('password')
-        normalized=ProxyManager.validate_fields(**manual)
+        keep_legacy=existing is not None and manual.get('protocol')==existing.get('protocol') and existing.get('protocol') in ('socks4','socks4a')
+        normalized=ProxyManager.validate_fields(**manual,allow_legacy=keep_legacy)
         def comparable(key,value):
             if key=='host':
                 try:return ipaddress.ip_address(value).compressed
@@ -151,7 +161,7 @@ class ProxyManager:
         portable_id=value.get('id')
         if not isinstance(portable_id,str) or not re.fullmatch(r'[a-f0-9]{8,32}',portable_id):portable_id=None
         existing=self.get_proxy(portable_id) if portable_id else None
-        if existing and all(existing.get(key,'')==fields[key] for key in fields):return existing
+        if existing and all((self.normalize_protocol(existing.get(key,'')) if key=='protocol' else existing.get(key,''))==fields[key] for key in fields):return existing
         identifier=portable_id if portable_id and not existing else uuid.uuid4().hex
         while self.get_proxy(identifier):identifier=uuid.uuid4().hex
         stamp=time.strftime('%Y-%m-%d %H:%M:%S')
@@ -190,10 +200,11 @@ class ProxyManager:
         except Exception:
             self.proxies=original;self._save();raise
 
-    def get_proxy_url(self, p):
+    def get_proxy_url(self, p, *, remote_dns=True):
         if not p:
             return None
-        proto = p.get("protocol", "http")
+        proto = self.normalize_protocol(p.get("protocol", "http"))
+        if proto=='socks5' and remote_dns:proto='socks5h'
         auth = ""
         if p.get("username"):
             pwd = p.get("password", "")
@@ -205,7 +216,7 @@ class ProxyManager:
     def get_proxy_link(self, p):
         """Reconstruct an importable link from the node's current saved fields."""
         if not p:raise ValueError('代理节点不存在')
-        return self.get_proxy_url(p)+'#'+urllib.parse.quote(p.get('name',''),safe='')
+        return self.get_proxy_url(p,remote_dns=False)+'#'+urllib.parse.quote(p.get('name',''),safe='')
 
     def test_proxy(self, p_or_id):
         if isinstance(p_or_id, str):

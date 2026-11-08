@@ -474,7 +474,7 @@ class ProfileManager:
             proxy=json.loads(proxy_file.read_text(encoding='utf-8'))
             from proxy_manager import ProxyManager
             if not isinstance(proxy,dict):raise ValueError('代理文件格式无效')
-            ProxyManager.validate_fields(**{key:proxy.get(key,'') for key in ('name','protocol','host','port','username','password')})
+            ProxyManager.validate_fields(**{key:proxy.get(key,'') for key in ('name','protocol','host','port','username','password')},allow_legacy=True)
         return source,meta,proxy
 
     def inspect_import(self,tar_path):
@@ -498,9 +498,9 @@ class ProfileManager:
         proxy=proxy_files.get(root)
         if proxy is not None:
             from proxy_manager import ProxyManager
-            ProxyManager.validate_fields(**{key:proxy.get(key,'') for key in ('name','protocol','host','port','username','password')})
+            ProxyManager.validate_fields(**{key:proxy.get(key,'') for key in ('name','protocol','host','port','username','password')},allow_legacy=True)
         return dict(name=str(meta.get('name','导入配置')),has_proxy=proxy is not None,
-                    proxy={key:proxy.get(key) for key in ('name','protocol','host','port')} if proxy is not None else None,
+                    proxy={key:ProxyManager.normalize_protocol(proxy.get(key)) if key=='protocol' else proxy.get(key) for key in ('name','protocol','host','port')} if proxy is not None else None,
                     proxy_message='包含对应代理' if proxy is not None else '无代理文件')
 
     def import_profile(self,tar_path,proxy_manager=None,include_proxy=False):

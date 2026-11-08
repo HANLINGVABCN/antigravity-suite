@@ -47,6 +47,8 @@ def portal(tmp_path, chromium):
         return state.updater.status()
     state.updater.check=fake_update_check
     node = state.proxies.add_proxy('节点旧名称 #1', 'socks5h', '2001:db8::1', 1080, 'a@b', 'dummy-password:@ /')
+    # A persisted node from an older release must be editable with the single SOCKS5 option.
+    node['protocol']='socks5h';state.proxies._save()
     profile = state.profiles.create_profile('测试账号 · ' + '较长名称和备注' * 5, node['id'])
     state.profiles.update_profile(profile['id'], email='dummy-account@example.invalid')
     settings = state.profiles.profile_dir(profile['id'])/'store/Antigravity_config/User/settings.json'
@@ -161,6 +163,8 @@ def test_prefilled_node_rename_survives_polling_and_real_conflicts_stay_unsaved(
     page.locator('#proxy-container button:has-text("详情与编辑")').click()
     pw.expect(page.locator('#modal-proxy')).to_be_visible()
     pw.expect(page.locator('#proxy-id')).to_have_value(node['id'])
+    pw.expect(page.locator('#proxy-in-proto')).to_have_value('socks5')
+    assert page.locator('#proxy-in-proto option').evaluate_all('options=>options.map(option=>option.textContent)')==['SOCKS5','HTTPS','HTTP']
     pw.expect(page.locator('#proxy-links')).not_to_have_value('')
     link=page.locator('#proxy-links').input_value()
     assert 'dummy-password' in link and '#%E8%8A%82' in link
@@ -171,6 +175,7 @@ def test_prefilled_node_rename_survives_polling_and_real_conflicts_stay_unsaved(
     page.locator('#proxy-save-button').click()
     pw.expect(page.locator('#modal-proxy')).to_be_hidden()
     saved=page.request.get(portal['url']+'/__suite/api/proxies/detail?id='+node['id']).json()
+    assert saved['proxy']['protocol']=='socks5'
     assert saved['proxy']['id']==node['id'] and saved['proxy']['name']=='新名称 #2'
     assert saved['bound_profiles'][0]['id']==profile['id'] and node['password']=='dummy-password:@ /'
     page.locator('#proxy-container button:has-text("详情与编辑")').click()

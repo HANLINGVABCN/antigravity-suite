@@ -7,6 +7,7 @@ import pytest
 
 from profile_manager import ProfileManager
 from proxy_manager import ProxyManager
+from config import atomic_json
 from server import create_app
 from test_suite import config, FakeSupervisor, FakeProcess, start, login
 
@@ -23,7 +24,7 @@ def test_node_edits_preserve_identity_bound_profiles_and_persist_after_reload(tm
     nodes.update_proxy(original_id,dict(link='socks5h://other:p%40ss@new.example:1080#FromLink'))
     assert node['id']==original_id and node['created_at']==created and node['password']=='p@ss'
     reloaded=ProxyManager(tmp_path).get_proxy(original_id)
-    assert reloaded==node and reloaded['protocol']=='socks5h'
+    assert reloaded==node and reloaded['protocol']=='socks5'
     assert [p['proxy_id'] for p in profiles.list_profiles()]==[original_id,original_id]
     profiles.update_profile(a['id'],name='A renamed',email='dummy@example.com',proxy_id='')
     assert a['id']!=b['id'] and a['id']==profiles.list_profiles()[0]['id']
@@ -97,8 +98,43 @@ def test_saved_node_link_is_importable_with_ipv6_and_encoded_credentials(tmp_pat
     node=nodes.add_proxy('节点 A#1','socks5h','2001:db8::1',1080,'a@b','p:@ /')
     link=nodes.get_proxy_link(node)
     parsed=nodes.parse_link(link)
-    assert link.startswith('socks5h://a%40b:p%3A%40%20%2F@[2001:db8::1]:1080#')
+    assert link.startswith('socks5://a%40b:p%3A%40%20%2F@[2001:db8::1]:1080#')
     assert all(parsed[key]==node[key] for key in ('name','protocol','host','port','username','password'))
+
+
+def test_old_remote_dns_node_keeps_identity_and_accepts_socks5_fields(tmp_path):
+    nodes=ProxyManager(tmp_path)
+    node=nodes.add_proxy('旧备注','socks5','proxy.example',1080,'user','private-password')
+    node['protocol']='socks5h';nodes._save()
+    before=(tmp_path/'proxies.json').read_bytes()
+    reloaded=ProxyManager(tmp_path)
+    assert (tmp_path/'proxies.json').read_bytes()==before
+    old=copy.deepcopy(reloaded.get_proxy(node['id']))
+    assert reloaded.public_proxy(old)['protocol']=='socks5'
+    assert reloaded.import_proxy(dict(old,protocol='socks5'))['id']==old['id']
+    assert len(reloaded.proxies)==1 and reloaded.get_proxy(old['id'])==old
+    reloaded.update_proxy(old['id'],dict(name='新备注',protocol='socks5',host=old['host'],port=old['port'],username='user',password='',
+                                       link='socks5h://user:private-password@proxy.example:1080#%E6%96%B0%E5%A4%87%E6%B3%A8'))
+    saved=reloaded.get_proxy(old['id'])
+    assert saved['protocol']=='socks5' and saved['id']==old['id'] and saved['password']==old['password']
+    assert saved['created_at']==old['created_at']
+
+
+@pytest.mark.parametrize('protocol',['socks4','socks4a'])
+def test_legacy_protocols_cannot_be_created_but_saved_nodes_can_be_renamed(tmp_path,protocol):
+    nodes=ProxyManager(tmp_path)
+    with pytest.raises(ValueError,match='仅支持'):
+        nodes.add_proxy('不支持',protocol,'proxy.example',1080)
+    with pytest.raises(ValueError,match='仅支持'):
+        nodes.import_links('http://proxy.example:8080\n'+protocol+'://proxy.example:1080')
+    assert nodes.proxies==[]
+    old=dict(id='a'*32,name='旧节点',protocol=protocol,host='proxy.example',port=1080,username='',password='',created_at='original')
+    atomic_json(tmp_path/'proxies.json',[old])
+    nodes=ProxyManager(tmp_path)
+    nodes.update_proxy(old['id'],dict(name='改名',protocol=protocol,link=nodes.get_proxy_link(old)))
+    assert nodes.get_proxy(old['id'])['protocol']==protocol and nodes.get_proxy(old['id'])['created_at']=='original'
+    nodes.update_proxy(old['id'],dict(protocol='socks5'))
+    assert nodes.get_proxy(old['id'])['protocol']=='socks5' and nodes.get_proxy(old['id'])['id']==old['id']
 
 
 @pytest.mark.skipif(shutil.which('node') is None,reason='Frontend helper test requires Node.js; Python/API tests still run')
@@ -220,10 +256,12 @@ def test_link_conflict_api_reports_failure_without_changing_ids_or_bindings(tmp_
     asyncio.run(scenario())
 
 
-def test_active_node_connection_requires_stop_but_rename_does_not(tmp_path):
+@pytest.mark.parametrize('protocol',['http','socks5h'])
+def test_active_node_connection_requires_stop_but_rename_does_not(tmp_path,protocol):
     async def scenario():
         supervisor=FakeSupervisor();app=create_app(config(tmp_path),supervisor=supervisor);state=app['state']
-        node=state.proxies.add_proxy('N','http','node.example',8080)
+        node=state.proxies.add_proxy('N',protocol,'node.example',8080)
+        node['protocol']=protocol;state.proxies._save()
         profile=state.profiles.create_profile('A',node['id']);state.active=profile['id']
         supervisor.process=FakeProcess();supervisor.active_port=45000
         runner,port=await start(app);url='http://127.0.0.1:%d'%port
@@ -231,8 +269,9 @@ def test_active_node_connection_requires_stop_but_rename_does_not(tmp_path):
             async with aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True)) as client:
                 await login(client,url)
                 response=await client.post(url+'/__suite/api/proxies/update',json={'id':node['id'],'name':'new label','link':state.proxies.get_proxy_link(node),
-                    'protocol':'http','host':'node.example','port':'8080','username':'','password':''})
-                assert response.status==200 and node['name']=='new label'
+                    'protocol':state.proxies.normalize_protocol(protocol),'host':'node.example','port':'8080','username':'','password':''})
+                result=await response.json()
+                assert response.status==200 and node['name']=='new label' and not result['connection_changed']
                 response=await client.post(url+'/__suite/api/proxies/update',json={'id':node['id'],'host':'other.example'})
                 assert response.status==409 and (await response.json())['requires_stop']
                 assert node['host']=='node.example' and profile['proxy_id']==node['id']

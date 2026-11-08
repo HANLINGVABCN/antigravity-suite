@@ -378,7 +378,7 @@ class SuiteState:
                     login_environment_ready=self.login_environment_open and bool(port),
                     opening_login=self.opening_login,
                     logout_protection=self.session_ops.desktop_status,
-                    profiles=self.profiles.list_profiles(),proxies=[{k:v for k,v in p.items() if k!='password'} for p in self.proxies.list_proxies()],system=system_memory())
+                    profiles=self.profiles.list_profiles(),proxies=[self.proxies.public_proxy(p) for p in self.proxies.list_proxies()],system=system_memory())
 
 def system_memory():
     try:
@@ -682,7 +682,9 @@ async def api(request):
             await s.ensure_switch_allowed()
             candidate=s.proxies.prepare_update(proxy_id,fields)
             item=s.proxies.get_proxy(proxy_id)
-            connection_changed=any(item.get(key)!=candidate.get(key) for key in ('protocol','host','port','username','password'))
+            connection_changed=any((s.proxies.normalize_protocol(item.get(key))!=s.proxies.normalize_protocol(candidate.get(key)))
+                                   if key=='protocol' else item.get(key)!=candidate.get(key)
+                                   for key in ('protocol','host','port','username','password'))
             active=s.profiles.get_profile(s.active)
             running=bool(s.supervisor.process and s.supervisor.process.poll() is None)
             if connection_changed and running and active and active.get('proxy_id')==proxy_id:

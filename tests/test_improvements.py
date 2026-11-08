@@ -135,6 +135,48 @@ def test_authenticated_http_proxy_bridge(tmp_path):
     asyncio.run(scenario())
 
 
+def test_socks5_node_check_and_runtime_resolve_domains_at_the_proxy(tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    captured={}
+    nodes=ProxyManager(tmp_path)
+    node=nodes.add_proxy('SOCKS5','socks5','127.0.0.1',1080)
+    def curl(command,**kwargs):
+        captured['curl_proxy']=command[command.index('--proxy')+1]
+        return SimpleNamespace(returncode=0,stdout='{"ip":"203.0.113.7"}',stderr='')
+    monkeypatch.setattr('proxy_manager.subprocess.run',curl)
+    assert nodes.test_proxy(node)['ok']
+    assert captured['curl_proxy']=='socks5h://127.0.0.1:1080'
+    async def scenario():
+        received=asyncio.get_running_loop().create_future()
+        async def socks(reader,writer):
+            try:
+                version,count=await reader.readexactly(2)
+                assert version==5
+                await reader.readexactly(count)
+                writer.write(b'\x05\x00');await writer.drain()
+                request=await reader.readexactly(4)
+                assert request==b'\x05\x01\x00\x03'
+                size=(await reader.readexactly(1))[0]
+                domain=(await reader.readexactly(size)).decode()
+                port=int.from_bytes(await reader.readexactly(2),'big')
+                received.set_result((domain,port))
+                writer.write(b'\x05\x00\x00\x01'+b'\x00'*6);await writer.drain()
+                await reader.read()
+            except Exception as error:
+                if not received.done():received.set_exception(error)
+            finally:writer.close()
+        upstream=await asyncio.start_server(socks,'127.0.0.1',0)
+        try:
+            node['port']=upstream.sockets[0].getsockname()[1]
+            async with OutboundProxy(nodes.get_proxy_url(node)) as bridge:
+                _,writer=await bridge.connect('only-the-proxy-can-resolve.invalid',443)
+                assert await asyncio.wait_for(received,3)==('only-the-proxy-can-resolve.invalid',443)
+                writer.close();await writer.wait_closed()
+        finally:
+            upstream.close();await upstream.wait_closed()
+    asyncio.run(scenario())
+
+
 @pytest.mark.skipif(os.name=='nt',reason='Linux deployment uses filesystem symlinks; run on target server')
 def test_start_endpoint_reports_starting_then_ready_without_redirect(tmp_path):
     async def scenario():

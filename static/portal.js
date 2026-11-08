@@ -266,7 +266,7 @@ let currentStatus = null;
                         <div class="card-head">
                             <div class="card-title">
                                 🛡️ ${escapeHtml(px.name)}
-                                <span class="pill" style="padding:2px 8px; font-size:10px; text-transform:uppercase;">${escapeHtml(px.protocol)}</span>
+                                <span class="pill" style="padding:2px 8px; font-size:10px; text-transform:uppercase;">${escapeHtml(px.protocol==='socks5h'?'socks5':px.protocol)}</span>
                             </div>
                             <button class="btn btn-danger" style="padding:4px 8px; font-size:11px;" onclick="deleteProxy('${px.id}')">删除</button>
                         </div>
@@ -285,7 +285,7 @@ let currentStatus = null;
                 });
             }
 
-            PortalUI.updateCards(pxCont, proxyCards, "代理池为空，可添加 HTTP / HTTPS / SOCKS 节点。");
+            PortalUI.updateCards(pxCont, proxyCards, "代理池为空，可添加 HTTP / HTTPS / SOCKS5 节点。");
 
             // Update modal selects
             updateProxySelects(proxies);
@@ -315,7 +315,10 @@ let currentStatus = null;
             document.getElementById("proxy-password-actions").style.display = "none";
             document.getElementById("proxy-links-label").textContent = "节点链接（每行一个）";
             for (const id of ["proxy-links","proxy-in-name","proxy-in-host","proxy-in-port","proxy-in-user","proxy-in-pass"]) document.getElementById(id).value = "";
-            document.getElementById("proxy-in-proto").value = "socks5";
+            const protocolSelect=document.getElementById("proxy-in-proto");
+            protocolSelect.querySelector('[data-legacy]')?.remove();
+            delete protocolSelect.dataset.savedProtocol;
+            protocolSelect.value = "socks5";
             document.getElementById("proxy-in-pass").type = "password";
             document.getElementById("proxy-in-pass").placeholder = "可留空";
             document.getElementById("proxy-clear-password").checked = false;
@@ -338,7 +341,13 @@ let currentStatus = null;
             document.getElementById("proxy-links").value = originalProxyLink;
             document.getElementById("proxy-in-name").value = proxy.name;
             proxyNameBeforeEdit = proxy.name;
-            document.getElementById("proxy-in-proto").value = proxy.protocol;
+            const protocolSelect=document.getElementById("proxy-in-proto");
+            const protocol=proxy.protocol==='socks5h'?'socks5':proxy.protocol;
+            if ([...protocolSelect.options].some(option=>option.value===protocol)) protocolSelect.value=protocol;
+            else {
+                const keep=new Option('保留原协议','');keep.disabled=true;keep.dataset.legacy='1';
+                protocolSelect.appendChild(keep);protocolSelect.value='';protocolSelect.dataset.savedProtocol=protocol;
+            }
             document.getElementById("proxy-in-host").value = proxy.host;
             document.getElementById("proxy-in-port").value = proxy.port;
             document.getElementById("proxy-in-user").value = proxy.username || "";
@@ -397,7 +406,7 @@ let currentStatus = null;
             const links = document.getElementById("proxy-links").value.trim();
             if (currentEditingProxyId) {
                 const fields = {name:document.getElementById("proxy-in-name").value,
-                        protocol:document.getElementById("proxy-in-proto").value,
+                        protocol:document.getElementById("proxy-in-proto").value || document.getElementById("proxy-in-proto").dataset.savedProtocol,
                         host:document.getElementById("proxy-in-host").value,
                         port:document.getElementById("proxy-in-port").value,
                         username:document.getElementById("proxy-in-user").value,
