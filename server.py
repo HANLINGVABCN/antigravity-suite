@@ -52,6 +52,8 @@ class SuiteState:
         self.native_controls=NativeControl(self);self.session_ops=SessionOperations(self)
         from suite_updater import SuiteUpdater
         self.updater=SuiteUpdater(self)
+        from service_restart import ServiceRestart
+        self.service_restart=ServiceRestart(self)
     async def refresh_existing(self, import_logins=False):
         if not self.discovery_enabled:return
         from discovery import discover
@@ -165,6 +167,7 @@ class SuiteState:
         self.engine_proxy_url=self.outbound_bridge.url
         return self.engine_proxy_url
     async def ensure_switch_allowed(self):
+        if self.service_restart.busy():raise ValueError('后台正在重启，请等待恢复')
         if self.launch_task and not self.launch_task.done():raise ValueError('正在启动档案，请等待完成')
         if self.exit_task and not self.exit_task.done():raise ValueError('正在退出配置，请稍后重试')
     def bind_engine_home(self, p_id):
@@ -217,14 +220,17 @@ class SuiteState:
                 self.diagnostics[target]=dict(status='abnormal',severity='error',reason='可能是检测进程、网络连接或凭据读取异常，请查看服务日志',checked_at=time.time())
         self.detection_tasks[target]=asyncio.create_task(detect())
     def request_open_login(self):
+        if self.login_environment_open and self.supervisor.active_port and not self.busy:return
         if self.launch_task and not self.launch_task.done():return
         if self.exit_task and not self.exit_task.done():raise ValueError('正在退出配置，请稍后重试')
         if not self.sessions.state.get('waiting'):raise ValueError('请先选择需要启动的配置')
-        self.opening_login=True
+        if self.installer.task and not self.installer.task.done():raise ValueError('本体操作尚未完成')
+        self.opening_login=True;self.last_error=''
         async def launch():
             async with self.lock:
                 self.busy=True;self.supervisor.is_restarting=True
                 try:
+                    await asyncio.to_thread(self.supervisor.stop_antigravity)
                     await self.session_ops.start_empty(self.session_ops.runtime(create=True))
                     self.cfg['login_environment']=True;self.persist()
                 except Exception as error:self.last_error=str(error)
@@ -387,6 +393,8 @@ async def guard(request,handler):
         if origin and urlsplit(origin).netloc!=request.host: return web.json_response({'ok':False,'error':'请求来源不匹配'},status=403)
         if s.updater.busy() and request.path not in ('/__suite/api/system/update/check','/__suite/api/system/update/start','/__suite/api/login','/__suite/api/logout'):
             return web.json_response(dict(ok=False,error='项目正在更新，请等待完成后再修改配置或启动 IDE'),status=409)
+        if s.service_restart.busy() and request.path not in ('/__suite/api/system/service-restart','/__suite/api/login','/__suite/api/logout'):
+            return web.json_response(dict(ok=False,error='后台正在重启，请等待恢复'),status=409)
     transport=request.transport
     if authenticated and transport:s.protected_connections.add(transport)
     try: response=await handler(request)
@@ -598,6 +606,9 @@ async def api(request):
         async with s.lock:
             await s.ensure_switch_allowed()
             include_proxy=format=='suite' and request.query.get('include_proxy')=='1'
+            option=request.query.get('include_history','1')
+            if option not in ('0','1'):raise ValueError('是否导出聊天记录必须为 0 或 1')
+            include_history=format=='suite' and option=='1'
             profile=s.profiles.get_profile(p_id)
             node=s.proxies.get_proxy(profile.get('proxy_id')) if include_proxy and profile.get('proxy_id') else None
             if include_proxy and not node:raise ValueError('此配置没有可导出的对应代理')
@@ -611,7 +622,7 @@ async def api(request):
                 else:
                     with tempfile.TemporaryDirectory() as tmp:
                         file=Path(tmp)/'profile.tar.gz'
-                        await asyncio.to_thread(s.profiles.export_profile,p_id,file,node)
+                        await asyncio.to_thread(s.profiles.export_profile,p_id,file,node,include_history)
                         data=await asyncio.to_thread(file.read_bytes)
             finally:
                 if restart: await asyncio.to_thread(s.supervisor.start_antigravity,s.engine_proxy_url)
@@ -702,6 +713,9 @@ async def api(request):
         if s.cfg.get('native_logged_out') and s.sessions.state.get('waiting'):s.request_open_login()
         else:s.request_start(s.active or s.cfg.get('default_profile_id'))
         return web.json_response(dict(ok=True,status='starting'),status=202)
+    if path=='system/service-restart/status' and method=='GET':return ok(**s.service_restart.status())
+    if path=='system/service-restart' and method=='POST':
+        return web.json_response(dict(ok=True,**await s.service_restart.start()),status=202)
     if path=='system/config':
         if method=='GET': return ok(**{k:s.cfg.get(k) for k in ['listen_host','listen_port','auth_user']})
         if method=='POST':
@@ -753,7 +767,7 @@ async def page(request):
         if not isinstance(data,dict):raise web.HTTPBadRequest()
         spec=s.native_controls.authorize(request,data)
         if not spec:raise web.HTTPForbidden()
-        if s.updater.busy():return web.json_response(dict(ok=False,error='项目正在更新'),status=409)
+        if s.updater.busy() or s.service_restart.busy():return web.json_response(dict(ok=False,error='项目正在更新或后台正在重启'),status=409)
         operation=data.get('operation');fields=data.get('fields',{})
         if not isinstance(fields,dict):raise web.HTTPBadRequest()
         if operation=='status':return web.json_response(dict(ok=True,**s.native_controls.minimal_status()))
@@ -790,6 +804,7 @@ async def page(request):
     if request.path=='/__suite/portal.js': return web.FileResponse(s.static/'portal.js')
     if request.path=='/__suite/transfer-feedback.js': return web.FileResponse(s.static/'transfer-feedback.js')
     if request.path=='/__suite/core-toggle.js': return web.FileResponse(s.static/'core-toggle.js')
+    if request.path=='/__suite/service-restart.js': return web.FileResponse(s.static/'service-restart.js')
     if request.path=='/__suite/update.js': return web.FileResponse(s.static/'update.js')
     if request.path=='/__suite/logout-guard.js': return web.FileResponse(s.static/'logout-guard.js')
     if request.path=='/__suite/portal.css': return web.FileResponse(s.static/'portal.css')
@@ -820,14 +835,16 @@ async def resources(app):
     async def autoboot():
         try:
             if s.cfg.get('login_environment') and s.sessions.state.get('waiting'):
-                await s.session_ops.start_empty(s.session_ops.runtime(create=True));return
+                s.request_open_login();return
             if s.cfg.get('native_logged_out'):return
-            target=s.cfg.get('default_profile_id')
+            resumed=s.cfg.pop('restart_resume_profile_id',None)
+            if resumed:s.persist()
+            target=resumed or s.cfg.get('default_profile_id')
             common=s.profiles.native_runtime
             migrate=bool(common.selected and target and (not common.binding or common.binding['profile_id']!=target))
             if target and (not s.supervisor.active_port or migrate):s.request_start(target,restart=migrate)
         except Exception as e: s.last_error=str(e); logging.error('默认档案启动失败：%s',e)
-    if s.cfg.get('default_profile_id'): boot=asyncio.create_task(autoboot())
+    if s.cfg.get('default_profile_id') or s.cfg.get('restart_resume_profile_id'): boot=asyncio.create_task(autoboot())
     elif s.cfg.get('login_environment'):boot=asyncio.create_task(autoboot())
     yield
     s.discovery_running=False

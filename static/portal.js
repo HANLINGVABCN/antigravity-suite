@@ -23,6 +23,7 @@ let currentStatus = null;
             clearRecoveryDisplay();
             document.getElementById("mfa-current-code").value = "";
             await loadAuthenticatorStatus();
+            await loadServiceRestartStatus();
             PortalUI.open("modal-service-settings");
         }
         async function saveServiceSettings() {
@@ -33,12 +34,14 @@ let currentStatus = null;
                 current_password:document.getElementById("settings-current").value,auth_pass:password,
                 code:document.getElementById("mfa-current-code").value.trim()})})).json();
             closeModals();
-            if (result.restart_required) alert("设置已保存。新端口将在下次管理服务启动时生效，请同时调整访问入口。");
+            if (result.restart_required) alert("设置已保存。重新打开“服务设置”并点击“重启后台服务”后，新端口才生效；请同步调整反代或 SSH 转发的目标端口。");
             if (password || user !== settingsOriginalUser) window.location.href = "/";
         }
 
 
         let localStartingId = null;
+        let requestingLogin = false;
+        let loginEntryError = '';
         function diagnosticMarkup(profile) {
             const result = currentStatus.diagnostics?.[profile.id];
             if (!result) return '<div class="diag pending">尚未检测</div>';
@@ -50,6 +53,12 @@ let currentStatus = null;
         function showSummary() {
             SuiteCoreToggle.render(currentStatus,coreStatus);
             const notice = document.getElementById("google-auth-notice");
+            const message=document.getElementById('google-auth-text');
+            const entry=document.getElementById('btn-open-login');
+            const loggedOut=currentStatus?.native_session?.state==='logged_out';
+            entry.hidden=!loggedOut;
+            entry.disabled=requestingLogin||!!currentStatus?.opening_login||!!currentStatus?.busy;
+            entry.textContent=requestingLogin||currentStatus?.opening_login?'正在打开登录界面…':currentStatus?.login_environment_ready?'进入登录界面':'打开登录界面';
             const protection=currentStatus?.logout_protection;
             const guardStatus=document.getElementById('logout-guard-status');
             guardStatus.textContent=protection?.renderer_ready?'桌面退出保护已验证。每次重新登录单独存档，退出请用“退出配置”。':
@@ -61,21 +70,32 @@ let currentStatus = null;
             exitButton.textContent=exiting?'正在退出…':'退出配置';
             if(exiting || phase==='error') {
                 notice.className='summary '+(phase==='error'?'abnormal':'pending');
-                notice.textContent=currentStatus.exit_state.message;return;
+                message.textContent=currentStatus.exit_state.message;return;
             }
             if (currentStatus?.native_session?.state === 'logged_out') {
                 notice.className = 'summary pending';
-                notice.textContent = '反重力当前未登录。已保存的账号配置仍保留，可以选择配置重新启动，或在反重力中登录另一个账号。';
-                if(currentStatus.login_environment_ready) {
-                    const enter=document.createElement('button');enter.className='btn btn-primary';enter.textContent='进入登录界面';
-                    enter.onclick=()=>location.href='/';notice.append(' ',enter);
-                }
+                message.textContent = '反重力当前未登录。已保存的账号配置仍保留，可以选择配置重新启动，或打开登录界面登录另一个账号。';
+                if(currentStatus.opening_login)message.textContent+=' 正在启动登录界面，请稍候。';
+                else if(currentStatus.last_error&&!currentStatus.login_environment_ready)message.textContent+=' 可能是登录环境启动异常：'+currentStatus.last_error;
+                if(loginEntryError)message.textContent+=' '+loginEntryError;
                 return;
             }
             const result = currentStatus?.diagnostics?.[currentStatus.active_profile?.id];
             notice.className = 'summary ' + (result?.status || 'pending');
-            notice.textContent = result ? ((result.status === 'abnormal' ? '异常：' : '') + result.reason) :
+            message.textContent = result ? ((result.status === 'abnormal' ? '异常：' : '') + result.reason) :
                 '隐私保护已启用：IDE 网页禁止外部直连，登录存档各自保留，聊天记录共享。点击档案的“检测”检查账号状态。';
+        }
+        async function openNativeLogin(){
+            if(requestingLogin)return;
+            requestingLogin=true;loginEntryError='';showSummary();
+            try{
+                const status=await(await fetch('/__suite/api/status',{cache:'no-store'})).json();
+                if(status.native_session?.state!=='logged_out'){await fetchStatus();return;}
+                if(status.login_environment_ready&&!status.opening_login&&!status.busy){location.href='/';return;}
+                await fetch('/__suite/api/system/start',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+                await fetchStatus();
+            }catch(error){loginEntryError='登录界面暂未打开：'+error.message;}
+            finally{requestingLogin=false;showSummary();}
         }
         async function detectProfile(id) {
             await fetch("/__suite/api/profiles/detect", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({profile_id:id})});
@@ -641,8 +661,10 @@ let currentStatus = null;
             const proxy = currentStatus.proxies.find(p => p.id === profile.proxy_id);
             exportProfileId = id;
             document.getElementById("export-profile-name").textContent = profile.name;
-            document.getElementById("export-proxy-option").style.display = proxy ? "block" : "none";
-            document.getElementById("export-include-proxy").checked = Boolean(proxy);
+            document.getElementById("export-proxy-option").style.display = "block";
+            document.getElementById("export-include-proxy").checked = false;
+            document.getElementById("export-include-proxy").disabled = !proxy;
+            document.getElementById("export-include-history").checked = false;
             document.getElementById("export-proxy-detail").textContent = proxy ? proxy.name + " · " + proxy.protocol + "://" + proxy.host + ":" + proxy.port : "无对应代理";
             chooseExportFormat('suite');
             PortalUI.open("modal-export-profile");
@@ -653,12 +675,16 @@ let currentStatus = null;
                 document.getElementById('export-format-' + name).className = name === format ? 'btn btn-primary' : 'btn btn-secondary';
             }
             document.getElementById('export-native-proxy').style.display = format === 'suite' ? 'block' : 'none';
-            document.getElementById('export-format-description').textContent = format === 'suite' ?
-                '本工具压缩包：包含配置和共享聊天记录，可选择附带对应代理。' :
-                (format === 'cpa' ? 'CPA 账号 JSON' : 'Sub2API 账号数据 JSON') + '：只导出 Antigravity 登录凭据，不含代理和聊天记录。';
-            document.getElementById('export-private-warning').textContent = format === 'suite' ?
-                '导出包包含账号凭据和聊天记录；附带代理时也会包含节点密码，请私有保管。' :
-                'JSON 含账号登录凭据，不含代理和聊天记录，请私有保管。';
+            updateExportDescription();
+        }
+        function updateExportDescription() {
+            const format=selectedExportFormat;
+            const history=format==='suite'&&document.getElementById('export-include-history').checked;
+            const proxy=format==='suite'&&document.getElementById('export-include-proxy').checked;
+            document.getElementById('export-format-description').textContent=format==='suite'?
+                '本次导出：账号配置'+(history?' + 本地全部聊天记录':'，不含聊天记录')+(proxy?' + 对应代理':'，不含代理')+'。':
+                (format==='cpa'?'CPA 账号 JSON':'Sub2API 账号数据 JSON')+'：只导出 Antigravity 登录凭据，不含代理和聊天记录。';
+            document.getElementById('export-private-warning').textContent='导出含账号登录凭据'+(history?'、全部本地聊天记录':'')+(proxy?'、节点密码':'')+'，请私有保管。';
         }
         async function downloadProfile() {
             if (!exportProfileId) return;
@@ -668,12 +694,13 @@ let currentStatus = null;
                 const id = exportProfileId;
                 const format = selectedExportFormat;
                 const includeProxy = format === 'suite' && document.getElementById("export-include-proxy").checked;
-                const response = await fetch("/__suite/api/profiles/export?id=" + encodeURIComponent(id) + "&format=" + format + "&include_proxy=" + (includeProxy ? "1" : "0"));
+                const includeHistory = format === 'suite' && document.getElementById("export-include-history").checked;
+                const response = await fetch("/__suite/api/profiles/export?id=" + encodeURIComponent(id) + "&format=" + format + "&include_proxy=" + (includeProxy ? "1" : "0")+"&include_history="+(includeHistory?'1':'0'));
                 const url = URL.createObjectURL(await response.blob());
                 const link = document.createElement("a"); link.href = url; link.download = format + "_" + id + (format === 'suite' ? '.tar.gz' : '.json');
                 document.body.appendChild(link); link.click(); link.remove();
                 setTimeout(() => URL.revokeObjectURL(url), 30000);
-                closeModals(); showTransferStatus(format !== 'suite' ? '账号已导出为 ' + (format === 'cpa' ? 'CPA' : 'Sub2API') + ' 格式，不含代理。' : includeProxy ? "配置已导出，包含对应代理" : "配置已导出，不包含代理文件");
+                closeModals(); showTransferStatus(format !== 'suite' ? '账号已导出为 ' + (format === 'cpa' ? 'CPA' : 'Sub2API') + ' 格式，不含代理和聊天记录。' : '配置已导出，'+(includeHistory?'包含本地全部聊天记录':'不含聊天记录')+'，'+(includeProxy?'包含对应代理':'不含代理')+'。');
             } catch (error) { alert(error.message); }
             finally { button.disabled = false; button.textContent = "导出"; }
         }

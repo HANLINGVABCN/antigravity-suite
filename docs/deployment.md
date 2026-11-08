@@ -2,7 +2,7 @@
 
 ## 普通 Ubuntu/Debian VPS（systemd）
 
-要求 Linux x86_64 或 ARM64、Python 3.9+、curl、Xvfb、xdpyinfo 和本体运行依赖。安装脚本针对使用 systemd 的主机：
+要求 Linux x86_64 或 ARM64、Python 3.9+、curl、Xvfb、xdpyinfo 和本体运行依赖。Debian/Ubuntu 主机和容器使用同一脚本，自动选择服务管理方式：
 
 ```bash
 git clone https://github.com/HANLINGVABCN/antigravity-suite.git
@@ -30,7 +30,20 @@ sudo bash install.sh
 
 项目会优先发现现有可用本体和原配置，后台以“已有共享配置”显示。确认卸载时只处理可验证的独立本体目录，移动到私有备份，保留配置和聊天库；无法安全确认的目录拒绝自动卸载。详见 [已有本体与配置](existing-installations.md)。
 
-## 手动或 Supervisor / s6 容器
+## Supervisor / s6 容器直接安装
+
+同样运行 `sudo bash install.sh`，不再因缺少 systemd 拒绝安装。
+
+- 已运行的 Supervisor：识别 `/config/keepalive/supervisord.conf`、`/etc/supervisor/supervisord.conf` 等本机配置。已有本项目服务时复用其源码、数据目录和身份，仅停止／更新本项目，不影响其他程序。
+- 无 Supervisor：安装运行依赖并创建独立 Supervisor，配置和启动脚本保存在数据目录的 `supervisor/` 下，控制接口使用权限 600 的本机 Unix socket。LinuxServer s6 容器会登记 `/custom-cont-init.d` 启动钩子；其他容器显示 `sh 数据目录/supervisor/start.sh`，将其加入容器启动命令。
+- 有 `/config` 的新容器默认把源码和数据放在 `/config/antigravity-suite-improved` 及其 `data/`；已有服务优先使用已经登记的实际路径。没有 `/config` 则使用上表默认路径。
+- 重建容器时需持久化源码、数据和 Supervisor 或 s6 启动配置。安装脚本能在当前容器启动服务，但不能替宿主机修改 Docker 挂载或容器重启策略。
+
+自定义位置可用 `sudo env ANTIGRAVITY_INSTALL_DIR=/明确源码目录 ANTIGRAVITY_SUITE_DATA=/明确数据目录 bash install.sh`。只有明确的绝对路径可接受，源码不能位于数据目录内；若与已运行服务的目录冲突则拒绝另建重复后台。`ANTIGRAVITY_SUPERVISOR_CONFIG` 可指定实际 Supervisor 主配置。
+
+依赖准备后才停止已有后台，升级前保存私有数据及源码备份；启动失败恢复原源码和服务。安装结果只有通过 HTTP 检查后才报告后台已启动。
+
+## 手动部署
 
 安装依赖后建立独立环境：
 
@@ -42,7 +55,7 @@ python3 configure_install.py --data-dir /path/to/private-data
 ANTIGRAVITY_SUITE_DATA=/path/to/private-data .venv/bin/python server.py
 ```
 
-配置向导只依赖 Python 标准库，可单独用于容器；首次选端口、用户名和密码，已有配置默认保留。手动调整已有端口前先停止管理服务，再运行向导并重启；可使用 `--non-interactive` 保留现有值。随后验证前台启动，再参考 [Supervisor 示例](../examples/supervisor.conf) 加入你的监管配置。替换源码、数据和日志路径，运行 `supervisorctl reread`、`supervisorctl update`。没有 systemd 的容器请使用这些步骤，systemd 安装脚本会说明并退出。
+配置向导只依赖 Python 标准库，可单独用于手动部署；首次选端口、用户名和密码，已有配置默认保留。随后验证前台启动，再参考 [Supervisor 示例](../examples/supervisor.conf) 加入你的监管配置。通常直接使用安装脚本即可完成容器部署。
 
 服务用户必须能够读写数据目录、启动 Xvfb 并执行本体。默认 systemd 安装器使用 root；容器或手动部署可以选择专用普通用户。
 
@@ -122,13 +135,23 @@ journalctl -u antigravity-suite-improved -f
 
 ## 导出和导入对应代理
 
+v0.9.2 导出本工具格式时提供两个独立选项，默认都不勾选：“导出本地全部聊天记录”和“导出对应代理”。前者包含这台机器共享库的全部账号对话正文、过程文件和索引，导入后会合并到目标机器；取消时也过滤存档 `store` 和配置 `home` 中相同的聊天路径，避免顺带带入记录。工作区源码、账号凭据和其他配置仍可包含。旧客户端未发送新选项时，API 保持旧的含聊天记录导出行为。
+
 点击档案的“导出”后，如果档案绑定了有效节点，可选择“导出对应代理”。勾选时，包内添加独立的 `profile/proxy.json`，只包含对应的一个节点及其认证信息；不勾选则不添加代理文件。整个代理池不会被打包。没有绑定节点时显示“无对应代理”。
 
 选择配置包后，服务先检查包结构。若存在有效代理文件，显示“导入对应代理”选项，可取消勾选后只导入配置；如果没有代理文件，显示“无代理文件”，直接导入配置，不询问是否导入代理。旧格式档案包也适用这一流程。选择导入代理时会自动绑定；不导入时不会按旧 proxy_id 误绑定本地节点。
 
 代理 ID 在目标服务器未被使用时可保留；ID 与内容相同的已有节点直接复用，ID 相同但连接内容不同则新建节点并为新档案绑定，避免改写现有节点。配置导入仍创建副本，已有配置 ID 和绑定关系不变。导入预览与管理员会话绑定，10 分钟后失效，取消时删除临时上传包。
 
-附带代理的包包含节点密码；所有配置包本身也包含账号凭据和聊天记录，应作为私有备份保管。
+附带代理的包包含节点密码；所有配置包本身包含账号凭据，应作为私有备份保管。
+
+勾选聊天记录时包才包含共享对话库；没有勾选仍包含账号凭据。CPA／Sub2API 只导出账号凭据，没有聊天或代理选项。
+
+## 网页重启后台服务
+
+在“服务设置”保存端口后，点击“重启后台服务”使新端口生效。工作进程独立运行，先由服务正常停止保存当前配置，再重启 systemd／Supervisor 后台并检查实际监听端口。它与“启动反重力”“停止反重力”以及原生引擎重启是不同操作。
+
+后台会短暂断开；同端口页面等待恢复并刷新。直接通过端口访问时提示新地址；反代或 SSH 转发需同步改目标端口。尚未保存的表单不会自动提交，端口占用会阻止重启。新端口启动失败时尝试恢复原端口，异常提示保留；账号密码、验证器和配置节点不重置。
 
 
 ## 可选的验证器两步验证

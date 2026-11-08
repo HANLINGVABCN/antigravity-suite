@@ -374,3 +374,45 @@ def test_core_button_stops_and_starts_the_same_profile_with_three_states(portal)
     button.click();pw.expect(button).to_have_text('启动中…');pw.expect(button).to_be_disabled()
     state.starting_profile_id=None;state.supervisor.process=FakeProcess();state.supervisor.active_port=45000
     page.evaluate('fetchStatus()');pw.expect(button).to_have_text('停止反重力')
+
+
+def test_export_two_independent_choices_are_visible_and_explain_contents(portal):
+    page=portal['page'];page.locator('#profile-container button:has-text("导出")').click()
+    history=page.locator('#export-include-history');proxy=page.locator('#export-include-proxy')
+    pw.expect(history).to_be_visible();pw.expect(proxy).to_be_visible()
+    pw.expect(history).not_to_be_checked();pw.expect(proxy).not_to_be_checked()
+    pw.expect(page.locator('#export-format-description')).to_contain_text('不含聊天记录')
+    history.check();pw.expect(page.locator('#export-format-description')).to_contain_text('本地全部聊天记录')
+    pw.expect(proxy).not_to_be_checked();proxy.check()
+    pw.expect(page.locator('#export-format-description')).to_contain_text('对应代理')
+    history.uncheck();pw.expect(proxy).to_be_checked()
+    page.locator('#export-format-cpa').click();pw.expect(history).to_be_hidden()
+    pw.expect(page.locator('#export-format-description')).to_contain_text('不含代理和聊天记录')
+
+
+def test_management_restart_is_explicit_and_keeps_progress_until_response(portal):
+    page=portal['page']
+    page.get_by_role('button',name='服务设置',exact=True).click()
+    pw.expect(page.locator('label[for="settings-port"]')).to_contain_text('重启后台服务生效')
+    button=page.locator('#btn-service-restart');pw.expect(button).to_be_enabled()
+    page.route('**/__suite/api/system/service-restart',lambda route:route.fulfill(status=202,content_type='application/json',body='{"ok":true,"supported":true,"running_port":18888,"saved_port":18888,"port_pending":false,"job":{"job_id":"browser-restart","phase":"queued"}}'))
+    page.route('**/__suite/api/system/service-restart/status',lambda route:route.fulfill(status=200,content_type='application/json',body='{"ok":true,"supported":true,"running_port":18888,"saved_port":18888,"port_pending":false,"job":{"job_id":"browser-restart","phase":"starting","message":"正在启动后台服务"}}'))
+    button.click();pw.expect(button).to_have_text('后台重启中…');pw.expect(button).to_be_disabled()
+    pw.expect(page.locator('#service-restart-status')).to_contain_text('正在启动后台服务')
+
+
+def test_logged_out_login_entry_survives_refresh_and_starts_before_entering(portal):
+    page=portal['page'];state=portal['state'];state.active=None;state.cfg['native_logged_out']=True
+    state.sessions.exited();page.reload()
+    button=page.locator('#btn-open-login');pw.expect(button).to_be_visible();pw.expect(button).to_have_text('打开登录界面')
+    identity=button.evaluate('element=>{element.dataset.identity="same-button";return element.dataset.identity}')
+    page.evaluate('fetchStatus()');assert button.get_attribute('data-identity')==identity
+    def start_route(route):
+        state.opening_login=True
+        route.fulfill(status=202,content_type='application/json',body='{"ok":true}')
+    page.route('**/__suite/api/system/start',start_route)
+    button.click();pw.expect(button).to_have_text('正在打开登录界面…');pw.expect(button).to_be_disabled()
+    page.reload();pw.expect(button).to_be_visible();pw.expect(button).to_have_text('正在打开登录界面…')
+    state.opening_login=False;state.login_environment_open=True;state.supervisor.active_port=45000
+    page.evaluate('fetchStatus()');pw.expect(button).to_have_text('进入登录界面')
+    pw.expect(button).to_be_enabled();assert page.url.endswith('/?portal=1')

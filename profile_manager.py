@@ -389,13 +389,23 @@ class ProfileManager:
         marker.write_text('1',encoding='ascii')
         self.history.attach(self.home)
         return True
-    def export_profile(self,p_id,output_path,proxy=None):
+    def export_profile(self,p_id,output_path,proxy=None,include_history=True):
         folder=self.profile_dir(p_id)
         profile=self.get_profile(p_id)
         metadata={key:profile.get(key) for key in ('id','name','email','proxy_id','created_at','last_used_at')}
+        metadata['export_options']=dict(include_history=bool(include_history),include_proxy=proxy is not None)
         atomic_json(folder/'profile.json',metadata)
+        def exclude_history(info):
+            if include_history:return info
+            parts=PurePosixPath(info.name).parts
+            roots=(('profile','store','gemini_antigravity'),('profile','home','.gemini','antigravity'))
+            for root in roots:
+                if parts[:len(root)]==root and len(parts)>len(root):
+                    name=parts[len(root)]
+                    if name in ('conversations','brain') or name.startswith('conversation_summaries.db'):return None
+            return info
         with tarfile.open(output_path,'w:gz') as tar:
-            tar.add(folder/'store',arcname='profile/store')
+            tar.add(folder/'store',arcname='profile/store',filter=exclude_history)
             tar.add(folder/'profile.json',arcname='profile/profile.json')
             if proxy is not None:
                 # A snapshot of only this profile's associated node, never the pool.
@@ -408,9 +418,9 @@ class ProfileManager:
                 def filter_member(info):
                     parts=PurePosixPath(info.name).parts
                     if any(n in IGNORE or n.startswith('Singleton') or 'Cache' in n or n in ('.tmp','.cache','engine.log') for n in parts):return None
-                    return info if info.isfile() or info.isdir() else None
+                    return exclude_history(info) if info.isfile() or info.isdir() else None
                 tar.add(home,arcname='profile/home',filter=filter_member)
-            if self.history.root.exists():
+            if include_history and self.history.root.exists():
                 tar.add(self.history.root/'conversations',arcname='profile/shared-history/conversations')
                 tar.add(self.history.root/'brain',arcname='profile/shared-history/brain')
                 db=self.history.root/'conversation_summaries.db'

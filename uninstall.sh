@@ -1,13 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ $EUID -ne 0 ]]; then echo '请使用 sudo bash uninstall.sh'; exit 1; fi
-systemctl stop antigravity-suite-improved.service 2>/dev/null || true
-suite_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -x "$suite_root/.venv/bin/python" ]]; then
-    "$suite_root/.venv/bin/python" "$suite_root/desktop_guard.py" --restore --data-dir "${ANTIGRAVITY_SUITE_DATA:-/var/lib/antigravity-suite-improved}"
+SOURCE_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+SERVICE_PLAN=$(mktemp /tmp/antigravity-suite-uninstall-XXXXXX.json)
+trap 'rm -f -- "$SERVICE_PLAN"' EXIT
+ARGS=(--source "$SOURCE_DIR")
+if [[ -n ${ANTIGRAVITY_SUITE_DATA:-} ]]; then ARGS+=(--data-dir "$ANTIGRAVITY_SUITE_DATA"); fi
+if [[ -n ${ANTIGRAVITY_SUPERVISOR_CONFIG:-} ]]; then ARGS+=(--supervisor-config "$ANTIGRAVITY_SUPERVISOR_CONFIG"); fi
+python3 "$SOURCE_DIR/installation_service.py" prepare --plan "$SERVICE_PLAN" "${ARGS[@]}"
+mapfile -t VALUES < <(python3 - "$SERVICE_PLAN" <<'PY'
+import json,sys
+p=json.load(open(sys.argv[1]));print(p['install_dir']);print(p['data_dir'])
+PY
+)
+INSTALL_DIR=${VALUES[0]}
+DATA_DIR=${VALUES[1]}
+python3 "$SOURCE_DIR/installation_service.py" stop --plan "$SERVICE_PLAN"
+if [[ -x "$INSTALL_DIR/.venv/bin/python" ]]; then
+  "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/desktop_guard.py" --restore --data-dir "$DATA_DIR"
 fi
-systemctl disable antigravity-suite-improved.service 2>/dev/null || true
-rm -f /etc/systemd/system/antigravity-suite-improved.service
-systemctl daemon-reload
-echo '服务已移除。源码、档案、登录凭据和备份均保留。'
-echo '源码：/opt/antigravity-suite-improved；数据：/var/lib/antigravity-suite-improved'
+python3 "$SOURCE_DIR/installation_service.py" remove --plan "$SERVICE_PLAN"
+echo '本项目服务已移除，源码、账号、聊天记录与备份保留。'
+echo "源码：$INSTALL_DIR；数据：$DATA_DIR"

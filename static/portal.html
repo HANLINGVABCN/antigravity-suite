@@ -28,7 +28,7 @@
             <div class="pill" id="pill-cur-ip">出口检测中...</div>
             <div class="pill" id="pill-suite-version">项目版本加载中…</div>
     </div>
-    <div class="history-tip">聊天记录由所有配置共享，切换账号不会隐藏其他账号的本地记录。</div><div id="google-auth-notice" role="status" style="margin:12px 24px;padding:12px;border:1px solid var(--border);border-radius:8px;font-size:13px">等待检查 Google 登录状态</div><div id="logout-guard-status" role="status" class="history-tip"></div>
+    <div class="history-tip">聊天记录由所有配置共享，切换账号不会隐藏其他账号的本地记录。</div><div id="google-auth-notice" role="status" style="margin:12px 24px;padding:12px;border:1px solid var(--border);border-radius:8px;font-size:13px"><span id="google-auth-text">等待检查 Google 登录状态</span><button class="btn btn-primary" id="btn-open-login" onclick="openNativeLogin()" hidden style="margin-left:12px;">打开登录界面</button></div><div id="logout-guard-status" role="status" class="history-tip"></div>
 
     <main>
         <!-- 左侧：Google 账号与配置档案 -->
@@ -240,7 +240,8 @@
 
     <div class="modal-mask" id="modal-service-settings" hidden><div class="modal">
 <div class="modal-header">服务设置</div><div class="modal-body">
-<div class="form-group"><label for="settings-port">监听端口（下次管理服务启动时生效）</label><input class="form-control" id="settings-port" type="number" min="1" max="65535"></div>
+<div class="form-group"><label for="settings-port">监听端口（保存后重启后台服务生效）</label><input class="form-control" id="settings-port" type="number" min="1" max="65535"><p style="font-size:12px;color:var(--text-sub);margin-top:8px;">先保存设置，再点击“重启后台服务”。启动或重启反重力不改变后台端口；使用反代或 SSH 转发时也要调整目标端口。</p></div>
+<div class="form-group"><button type="button" class="btn btn-secondary" id="btn-service-restart" onclick="restartManagementService()">重启后台服务</button><p id="service-restart-status" role="status" style="font-size:13px;margin-top:8px;"></p><p style="font-size:12px;color:var(--text-sub);">保存运行配置后重启管理后台，页面会短暂断开。未保存的表单不会自动提交。</p></div>
 <div class="form-group"><label for="settings-user">管理员用户名</label><input class="form-control" id="settings-user" autocomplete="username"></div>
 <div class="form-group"><label for="settings-current">当前密码（修改账号密码或操作验证器时填写）</label><input class="form-control" id="settings-current" type="password" autocomplete="current-password"></div>
 <div class="form-group"><label for="settings-new">新密码（至少 12 个字符，留空保持原密码）</label><input class="form-control" id="settings-new" type="password" autocomplete="new-password"></div>
@@ -286,7 +287,9 @@
             <button class="btn btn-secondary" id="export-format-sub2api" onclick="chooseExportFormat('sub2api')">导出为 Sub2API 格式</button>
         </div>
         <div id="export-native-proxy">
-            <label id="export-proxy-option" style="font-size:14px;"><input type="checkbox" id="export-include-proxy"> 导出对应代理</label>
+            <label style="font-size:14px;display:block;margin-bottom:14px;"><input type="checkbox" id="export-include-history" onchange="updateExportDescription()"> 导出本地全部聊天记录</label>
+            <p style="font-size:12px;color:var(--text-sub);margin-bottom:16px;">包含这台机器共享库里的全部账号对话、过程文件和索引，导入后会合并到目标机器。取消勾选则不导出这些记录。</p>
+            <label id="export-proxy-option" style="font-size:14px;"><input type="checkbox" id="export-include-proxy" onchange="updateExportDescription()"> 导出对应代理</label>
             <p id="export-proxy-detail" style="font-size:12px;color:var(--text-sub);margin-top:8px;"></p>
         </div>
         <p id="export-format-description" style="font-size:13px;color:var(--text-sub);margin-top:10px;"></p>
@@ -352,5 +355,6 @@
     <script src="/__suite/core-toggle.js"></script>
     <script src="/__suite/portal.js"></script>
     <script src="/__suite/update.js"></script>
+    <script src="/__suite/service-restart.js"></script>
 </body>
 </html>
