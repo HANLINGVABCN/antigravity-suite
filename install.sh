@@ -2,15 +2,19 @@
 set -euo pipefail
 umask 077
 WIZARD_ARGS=()
+NATIVE_ARGS=()
 for ARG in "$@"; do
   case "$ARG" in
-    --non-interactive) WIZARD_ARGS=(--non-interactive);;
+    --non-interactive) WIZARD_ARGS=(--non-interactive); NATIVE_ARGS+=(--non-interactive);;
+    --close-antigravity) NATIVE_ARGS+=(--close-antigravity);;
     --help|-h)
-      echo '用法：sudo bash install.sh [--non-interactive]'
+      echo '用法：sudo bash install.sh [--non-interactive] [--close-antigravity]'
       echo '自动识别 systemd、已有 Supervisor 或容器独立 Supervisor。'
       echo '同一安装向导选择端口、管理员用户名、随机或自定义密码。'
       echo '已有部署自动复用源码和数据目录，保留密码、验证器、配置和节点。'
       echo '--non-interactive：首次使用 18888/admin/随机密码；升级保留设置。'
+      echo '运行中的反重力会先显示关闭确认；默认不关闭，取消则退出安装。'
+      echo '--close-antigravity：明确允许关闭检测到的反重力实例，适用于非交互安装。'
       echo '可选环境变量：ANTIGRAVITY_INSTALL_DIR、ANTIGRAVITY_SUITE_DATA、ANTIGRAVITY_SERVICE_MANAGER、ANTIGRAVITY_SUPERVISOR_CONFIG。'
       exit 0;;
     *) echo "未知选项：$ARG（使用 --help 查看用法）"; exit 1;;
@@ -20,6 +24,8 @@ SOURCE_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 if [[ $EUID -ne 0 ]]; then echo '请使用 sudo bash install.sh'; exit 1; fi
 if ! command -v apt-get >/dev/null 2>&1; then echo '目前自动安装依赖支持 Debian/Ubuntu 及其容器。'; exit 1; fi
 export DEBIAN_FRONTEND=noninteractive
+INSTALL_STAGE='准备 Python 运行环境'
+trap 'RESULT=$?; printf "安装失败：%s（退出码 %s）。请查看上方具体错误，未完成安装。\n" "$INSTALL_STAGE" "$RESULT" >&2' ERR
 if ! command -v python3 >/dev/null 2>&1; then
   apt-get update
   apt-get install -y --no-install-recommends python3
@@ -27,6 +33,7 @@ fi
 python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else "需要 Python 3.9 或更高版本")'
 PLAN_FILE=$(mktemp /tmp/antigravity-suite-install-XXXXXX.json)
 SERVICE_PLAN=$(mktemp /tmp/antigravity-suite-service-XXXXXX.json)
+NATIVE_PLAN=$(mktemp /tmp/antigravity-suite-native-XXXXXX.json)
 RECOVERY_DIR=$(mktemp -d /tmp/antigravity-suite-install-recovery-XXXXXX)
 cp -- "$SOURCE_DIR/installation_service.py" "$SOURCE_DIR/service_control.py" "$SOURCE_DIR/config.py" "$RECOVERY_DIR/"
 STOPPED=0
@@ -53,12 +60,15 @@ PY
     fi
     python3 "$RECOVERY_DIR/installation_service.py" restore --plan "$SERVICE_PLAN" || true
   fi
-  rm -f -- "$PLAN_FILE" "$SERVICE_PLAN"
+  rm -f -- "$PLAN_FILE" "$SERVICE_PLAN" "$NATIVE_PLAN"
   rm -f -- "$RECOVERY_DIR/installation_service.py" "$RECOVERY_DIR/service_control.py" "$RECOVERY_DIR/config.py"
   # Python cache is confined to this freshly allocated temporary directory.
   if [[ "$RECOVERY_DIR" == /tmp/antigravity-suite-install-recovery-* ]]; then rm -rf -- "$RECOVERY_DIR"; fi
 }
 trap cleanup EXIT
+INSTALL_STAGE='检查运行中的反重力并确认关闭'
+python3 "$SOURCE_DIR/native_install_guard.py" prepare --plan "$NATIVE_PLAN" "${NATIVE_ARGS[@]}"
+INSTALL_STAGE='识别后台服务和安装目录'
 SERVICE_ARGS=(--source "$SOURCE_DIR" --manager "${ANTIGRAVITY_SERVICE_MANAGER:-auto}")
 if [[ -n ${ANTIGRAVITY_INSTALL_DIR:-} ]]; then SERVICE_ARGS+=(--install-dir "$ANTIGRAVITY_INSTALL_DIR"); fi
 if [[ -n ${ANTIGRAVITY_SUITE_DATA:-} ]]; then SERVICE_ARGS+=(--data-dir "$ANTIGRAVITY_SUITE_DATA"); fi
@@ -72,13 +82,16 @@ PY
 INSTALL_DIR=${SERVICE_VALUES[0]}
 DATA_DIR=${SERVICE_VALUES[1]}
 MANAGER=${SERVICE_VALUES[2]}
+INSTALL_STAGE='选择端口与管理员设置'
 python3 "$SOURCE_DIR/configure_install.py" --data-dir "$DATA_DIR" --prepare "$PLAN_FILE" "${WIZARD_ARGS[@]}"
 echo '正在准备依赖，已有后台继续运行。'
+INSTALL_STAGE='准备系统运行依赖'
 apt-get update
 PACKAGES=(python3 xvfb x11-utils curl ca-certificates libnss3 libatk1.0-0 libatk-bridge2.0-0 libx11-xcb1 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libgtk-3-0)
 if [[ $MANAGER == supervisor ]]; then PACKAGES+=(supervisor); fi
 apt-get install -y --no-install-recommends "${PACKAGES[@]}"
 mkdir -p "$INSTALL_DIR"
+INSTALL_STAGE='准备 Python 独立环境和依赖'
 if [[ ! -x "$INSTALL_DIR/.venv/bin/python" ]]; then
   if ! python3 -m venv "$INSTALL_DIR/.venv" > "$INSTALL_DIR/venv-bootstrap.log" 2>&1; then
     echo '系统未提供可用的 venv/ensurepip，使用 PyPA 官方 virtualenv 建立独立环境。'
@@ -91,10 +104,15 @@ if [[ ! -x "$INSTALL_DIR/.venv/bin/python" ]]; then
 fi
 "$INSTALL_DIR/.venv/bin/python" -m pip install -r "$SOURCE_DIR/requirements.txt"
 echo '依赖已准备，正在保存现有后台并检查端口。'
+INSTALL_STAGE='停止并保存现有管理后台'
 python3 "$SOURCE_DIR/installation_service.py" stop --plan "$SERVICE_PLAN"
 STOPPED=1
+INSTALL_STAGE='关闭已确认的反重力并释放配置锁'
+python3 "$SOURCE_DIR/native_install_guard.py" close --plan "$NATIVE_PLAN"
+INSTALL_STAGE='检查后台监听端口'
 python3 "$SOURCE_DIR/configure_install.py" --data-dir "$DATA_DIR" --check-port "$PLAN_FILE"
 BACKUP_DIR="$(dirname "$DATA_DIR")/antigravity-suite-backups/install-$(date +%Y%m%d-%H%M%S)-$$"
+INSTALL_STAGE='备份现有配置及源码'
 mkdir -p "$BACKUP_DIR" "$DATA_DIR"
 if [[ -f "$DATA_DIR/config.json" ]]; then
   cp -- "$DATA_DIR/config.json" "$BACKUP_DIR/config.json"
@@ -102,6 +120,8 @@ if [[ -f "$DATA_DIR/config.json" ]]; then
   echo "升级前已备份数据到 $BACKUP_DIR"
 fi
 if [[ -f "$DATA_DIR/installation-service.json" ]]; then cp -- "$DATA_DIR/installation-service.json" "$BACKUP_DIR/installation-service.json"; fi
+python3 "$SOURCE_DIR/native_install_guard.py" check --plan "$NATIVE_PLAN"
+INSTALL_STAGE='安装管理后台源码'
 python3 - "$SOURCE_DIR" "$INSTALL_DIR" "$BACKUP_DIR" <<'PY'
 import json,pathlib,shutil,sys
 src,dst,backup=map(pathlib.Path,sys.argv[1:])
@@ -122,6 +142,7 @@ for p in files:
     if src.resolve()!=dst.resolve():target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(p,target)
 PY
 "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/configure_install.py" --data-dir "$DATA_DIR" --apply "$PLAN_FILE"
+INSTALL_STAGE='加载已保存设置'
 HEALTH_URL=$(ANTIGRAVITY_SUITE_DATA="$DATA_DIR" "$INSTALL_DIR/.venv/bin/python" - <<'PY'
 from config import load_config
 cfg=load_config();host=cfg['listen_host']
@@ -130,9 +151,12 @@ if ':' in host:host='['+host+']'
 print('http://%s:%s/?portal=1' % (host,cfg['listen_port']))
 PY
 )
+INSTALL_STAGE='注册和启动后台服务'
+python3 "$INSTALL_DIR/native_install_guard.py" check --plan "$NATIVE_PLAN"
 python3 "$INSTALL_DIR/installation_service.py" register --plan "$SERVICE_PLAN"
 python3 "$INSTALL_DIR/installation_service.py" start --plan "$SERVICE_PLAN"
 HEALTHY=0
+INSTALL_STAGE='等待后台启动检查'
 for ATTEMPT in {1..30}; do
   if python3 "$INSTALL_DIR/installation_service.py" running --plan "$SERVICE_PLAN" && curl -fsS --noproxy '*' --max-time 1 "$HEALTH_URL" >/dev/null 2>&1; then HEALTHY=1; break; fi
   sleep 1

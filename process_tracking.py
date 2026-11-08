@@ -36,7 +36,7 @@ def descendants(pid):
     return result
 
 
-def stop_process(process):
+def stop_process(process,grace_period=6):
     if process is None or process.poll() is not None:return
     main=process_info(process.pid)
     if not main:return
@@ -52,7 +52,7 @@ def stop_process(process):
     else:
         # Never kill a desktop session's shared process group.
         send(main,signal.SIGTERM)
-    try:process.wait(timeout=6)
+    try:process.wait(timeout=grace_period)
     except subprocess.TimeoutExpired:send(main,signal.SIGKILL);process.wait(timeout=3)
     for child in reversed(children):send(child,signal.SIGTERM)
     deadline=time.monotonic()+2
