@@ -22,7 +22,7 @@ def content_policy(request):
 def privacy_headers(request):
     return {'Content-Security-Policy': content_policy(request), 'Referrer-Policy': 'no-referrer',
             'X-DNS-Prefetch-Control': 'off', 'X-Content-Type-Options': 'nosniff',
-            'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), display-capture=()'}
+            'Permissions-Policy': 'camera=(), microphone=(self), geolocation=(), display-capture=()'}
 
 
 def inject_privacy(html, profile_id):

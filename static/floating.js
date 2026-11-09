@@ -27,8 +27,8 @@
     style.textContent = `
         #ag-floating-btn {
             position: fixed;
-            bottom: 24px;
-            right: 24px;
+            top: 40%;
+            right: 0;
             width: 48px;
             height: 48px;
             border-radius: 50%;
@@ -40,13 +40,32 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+            transition: width 0.2s, background 0.2s;
             user-select: none;
+            touch-action: none;
+            box-sizing: border-box;
+            outline-offset: 2px;
         }
+        #ag-floating-btn.is-docked {
+            width: 18px;
+            border-radius: 12px 0 0 12px;
+            border-right: 0;
+            box-shadow: -2px 0 8px #0f172a66;
+        }
+        #ag-floating-btn.is-docked[data-side="left"] {
+            border-radius: 0 12px 12px 0;
+            border-left: 0;
+            border-right: 2px solid #38bdf8;
+            box-shadow: 2px 0 8px #0f172a66;
+        }
+        #ag-floating-btn.is-docked svg { display: none; }
+        #ag-floating-btn .ag-edge-grip { display: none; }
+        #ag-floating-btn.is-docked .ag-edge-grip { display: block; color: #38bdf8; font: 22px system-ui; }
+        #ag-floating-btn.is-dragging { cursor: grabbing; transition: none; }
+        #ag-floating-btn[aria-expanded="true"] { visibility: hidden; }
+        #ag-floating-btn:focus-visible { outline: 2px solid #38bdf8; }
         #ag-floating-btn:hover {
-            transform: scale(1.08);
-            box-shadow: 0 6px 24px rgba(56, 189, 248, 0.5);
-            border-color: #7dd3fc;
+            background: #1e293b;
         }
         #ag-floating-btn svg {
             width: 26px;
@@ -71,8 +90,8 @@
             position: fixed;
             top: 0;
             right: -380px;
-            width: 360px;
-            height: 100vh;
+            width: min(360px, calc(100vw - 16px));
+            height: 100dvh;
             background: #0f172a;
             border-left: 1px solid #1e293b;
             color: #f8fafc;
@@ -86,6 +105,8 @@
         #ag-drawer.active {
             right: 0;
         }
+        #ag-drawer[data-side="left"] { left: -380px; right: auto; border-left: 0; border-right: 1px solid #1e293b; }
+        #ag-drawer[data-side="left"].active { left: 0; }
         .ag-header {
             padding: 18px 20px;
             border-bottom: 1px solid #1e293b;
@@ -112,6 +133,7 @@
         }
         .ag-body {
             flex: 1;
+            min-height: 0;
             overflow-y: auto;
             padding: 16px 20px;
         }
@@ -241,8 +263,13 @@
     // Floating Button
     const btn = document.createElement("div");
     btn.id = "ag-floating-btn";
-    btn.title = "打开 Antigravity 控制中心";
+    btn.title = "点击打开控制中心，拖动调整位置";
+    btn.classList.add('is-docked');
+    btn.setAttribute('role','button');btn.tabIndex=0;
+    btn.setAttribute('aria-label','打开 Antigravity 控制中心');
+    btn.setAttribute('aria-controls','ag-drawer');btn.setAttribute('aria-expanded','false');
     btn.innerHTML = `
+        <span class="ag-edge-grip" aria-hidden="true">‹</span>
         <svg viewBox="0 0 24 24">
             <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/>
         </svg>
@@ -307,17 +334,65 @@
     document.body.appendChild(mask);
 
     // Events
+    const positionKey='__agy_suite_dock_position_v1';
+    let position={side:'right',y:0.4},drag=null,suppressClick=false;
+    try {
+        const saved=JSON.parse(localStorage.getItem(positionKey));
+        if(saved&&['left','right'].includes(saved.side)&&Number.isFinite(saved.y))position={side:saved.side,y:Math.max(0,Math.min(1,saved.y))};
+    } catch { /* A restricted browser may disable persistent storage. */ }
+    function placeDock(){
+        const travel=Math.max(0,innerHeight-64);
+        btn.classList.add('is-docked');btn.classList.remove('is-dragging');
+        btn.dataset.side=position.side;drawer.dataset.side=position.side;
+        btn.style.top=(8+travel*position.y)+'px';btn.style.bottom='auto';
+        btn.style.left=position.side==='left'?'0':'auto';btn.style.right=position.side==='right'?'0':'auto';
+        btn.querySelector('.ag-edge-grip').textContent=position.side==='right'?'‹':'›';
+    }
+    function saveDock(){try{localStorage.setItem(positionKey,JSON.stringify(position));}catch{}}
+    placeDock();
+    btn.addEventListener('pointerdown',event=>{
+        if(event.button!==0||!event.isPrimary)return;
+        const rect=btn.getBoundingClientRect();
+        drag={id:event.pointerId,startX:event.clientX,startY:event.clientY,x:rect.x,y:rect.y,moved:false};
+        btn.setPointerCapture(event.pointerId);
+    });
+    btn.addEventListener('pointermove',event=>{
+        if(!drag||event.pointerId!==drag.id)return;
+        const dx=event.clientX-drag.startX,dy=event.clientY-drag.startY;
+        if(!drag.moved&&Math.hypot(dx,dy)<6)return;
+        drag.moved=true;event.preventDefault();
+        btn.classList.remove('is-docked');btn.classList.add('is-dragging');
+        btn.style.left=Math.max(0,Math.min(innerWidth-48,drag.x+dx))+'px';btn.style.right='auto';
+        btn.style.top=Math.max(8,Math.min(innerHeight-56,drag.y+dy))+'px';
+    });
+    function finishDrag(event){
+        if(!drag||event.pointerId!==drag.id)return;
+        if(drag.moved){
+            const rect=btn.getBoundingClientRect();
+            position={side:rect.x+rect.width/2<innerWidth/2?'left':'right',y:Math.max(0,Math.min(1,(rect.y-8)/Math.max(1,innerHeight-64)))};
+            suppressClick=true;setTimeout(()=>{suppressClick=false;},0);saveDock();
+        }
+        if(btn.hasPointerCapture(event.pointerId))btn.releasePointerCapture(event.pointerId);
+        drag=null;placeDock();
+    }
+    btn.addEventListener('pointerup',finishDrag);btn.addEventListener('pointercancel',finishDrag);
+    window.addEventListener('resize',()=>{drag=null;placeDock();});
     function openDrawer() {
         overlay.classList.add("active");
         drawer.classList.add("active");
+        btn.setAttribute('aria-expanded','true');
         loadSuiteStatus();
+        drawer.querySelector('.ag-close-btn').focus();
     }
     function closeDrawer() {
         overlay.classList.remove("active");
         drawer.classList.remove("active");
+        btn.setAttribute('aria-expanded','false');placeDock();
     }
 
-    btn.addEventListener("click", openDrawer);
+    btn.addEventListener('click',()=>{if(!suppressClick)openDrawer();});
+    btn.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();openDrawer();}});
+    document.addEventListener('keydown',event=>{if(event.key==='Escape'&&drawer.classList.contains('active')){closeDrawer();btn.focus();}});
     overlay.addEventListener("click", closeDrawer);
     drawer.querySelector(".ag-close-btn").addEventListener("click", closeDrawer);
 

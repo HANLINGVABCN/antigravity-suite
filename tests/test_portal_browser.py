@@ -21,7 +21,8 @@ from test_suite import PASSWORD, FakeSupervisor, config, start
 @pytest.fixture(scope='module')
 def chromium():
     with pw.sync_playwright() as runtime:
-        browser = runtime.chromium.launch(headless=True, executable_path=os.environ.get('ANTIGRAVITY_TEST_BROWSER') or None)
+        browser = runtime.chromium.launch(headless=True, executable_path=os.environ.get('ANTIGRAVITY_TEST_BROWSER') or None,
+                                          args=['--use-fake-device-for-media-stream'])
         yield browser
         browser.close()
 
@@ -541,3 +542,82 @@ def test_initialization_notice_waits_for_state_and_history_instead_of_showing_em
     pw.expect(notice).to_contain_text('正在等待账号状态')
     page.evaluate("window.dispatchEvent(new CustomEvent('agy-native-stream',{detail:{method:'GetAuthStatus',error:false}}))")
     pw.expect(notice).to_be_hidden()
+
+
+def test_current_site_microphone_works_with_consent_while_camera_remains_blocked(portal,chromium):
+    context=chromium.new_context(permissions=['microphone'])
+    context.add_cookies(portal['context'].cookies())
+    page=context.new_page()
+    try:
+        response=page.goto(portal['url']+'/?portal=1')
+        assert response.headers['permissions-policy']=='camera=(), microphone=(self), geolocation=(), display-capture=()'
+        assert "connect-src 'self'" in response.headers['content-security-policy']
+        result=page.evaluate('''async()=>{
+            const policy=document.featurePolicy;
+            const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+            const audioTracks=stream.getAudioTracks().length;stream.getTracks().forEach(track=>track.stop());
+            return {audioTracks,micAllowed:policy.allowsFeature('microphone'),cameraAllowed:policy.allowsFeature('camera'),
+                    otherOriginAllowed:policy.allowsFeature('microphone','https://example.invalid')};
+        }''')
+        assert result==dict(audioTracks=1,micAllowed=True,cameraAllowed=False,otherOriginAllowed=False)
+    finally:context.close()
+
+
+def floating_fixture(portal):
+    page=portal['page']
+    page.route('**/floating-fixture',lambda route:route.fulfill(status=200,content_type='text/html',body='''
+        <html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0">
+        <textarea style="position:fixed;bottom:12px;left:24px;width:calc(100vw - 80px);height:64px"></textarea>
+        <button id="fixture-microphone" style="position:fixed;bottom:25px;right:56px;width:28px;height:28px">Mic</button>
+        <script src="/__suite/floating.js"></script></body></html>'''))
+    page.goto(portal['url']+'/floating-fixture')
+    return page
+
+
+def test_floating_dock_drags_remembers_position_and_collapses_after_one_click(portal):
+    page=floating_fixture(portal);dock=page.locator('#ag-floating-btn')
+    pw.expect(dock).to_have_attribute('data-side','right')
+    assert dock.bounding_box()['width']==18
+    box=dock.bounding_box();page.mouse.move(box['x']+8,box['y']+24);page.mouse.down()
+    page.mouse.move(60,150,steps=12);page.mouse.up()
+    pw.expect(dock).to_have_attribute('data-side','left')
+    assert not page.locator('#ag-drawer').evaluate('e=>e.classList.contains("active")')
+    top=dock.bounding_box()['y']
+    assert top<200
+    page.reload()
+    pw.expect(dock).to_have_attribute('data-side','left')
+    assert abs(dock.bounding_box()['y']-top)<2
+    dock.click()
+    pw.expect(dock).to_have_attribute('aria-expanded','true')
+    assert page.locator('#ag-drawer').evaluate('e=>e.classList.contains("active")')
+    page.locator('#ag-drawer .ag-close-btn').click()
+    pw.expect(dock).to_have_attribute('aria-expanded','false')
+    assert dock.bounding_box()['width']==18
+    dock.focus();page.keyboard.press('Enter')
+    pw.expect(dock).to_have_attribute('aria-expanded','true')
+    page.keyboard.press('Escape');pw.expect(dock).to_have_attribute('aria-expanded','false')
+
+
+@pytest.mark.parametrize('width,height',[(1400,900),(700,800),(390,600),(390,400)])
+def test_collapsed_dock_leaves_microphone_clickable_and_stays_inside_small_viewport(portal,width,height):
+    page=floating_fixture(portal);page.set_viewport_size(dict(width=width,height=height))
+    dock=page.locator('#ag-floating-btn');box=dock.bounding_box()
+    assert box['x']>=0 and box['y']>=0 and box['x']+box['width']<=width and box['y']+box['height']<=height
+    page.locator('#fixture-microphone').click(trial=True)
+    assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+    dock.click();page.locator('#ag-drawer .ag-close-btn').click(trial=True)
+
+
+def test_floating_dock_touch_drag_does_not_open_and_invalid_saved_position_is_safe(portal):
+    page=portal['page']
+    page.evaluate('localStorage.setItem("__agy_suite_dock_position_v1",JSON.stringify({side:"right",y:1e9}))')
+    page=floating_fixture(portal);page.set_viewport_size(dict(width=390,height=600))
+    dock=page.locator('#ag-floating-btn')
+    box=dock.bounding_box();session=page.context.new_cdp_session(page)
+    try:
+        session.send('Input.dispatchTouchEvent',{'type':'touchStart','touchPoints':[{'x':box['x']+8,'y':box['y']+20}]})
+        session.send('Input.dispatchTouchEvent',{'type':'touchMove','touchPoints':[{'x':32,'y':180}]})
+        session.send('Input.dispatchTouchEvent',{'type':'touchEnd','touchPoints':[]})
+    finally:session.detach()
+    pw.expect(dock).to_have_attribute('data-side','left')
+    assert not page.locator('#ag-drawer').evaluate('e=>e.classList.contains("active")')
