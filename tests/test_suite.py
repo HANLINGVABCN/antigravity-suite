@@ -23,7 +23,7 @@ class FakeProcess:
 
 class FakeSupervisor:
     def __init__(self, port=None):
-        self.active_port=port; self.process=None; self.is_restarting=False
+        self.active_port=port; self.process=FakeProcess() if port else None; self.is_restarting=False
         self.events=[]; self.current_proxy_url=None; self.fail=False
     def installed(self): return True
     def stop_antigravity(self):

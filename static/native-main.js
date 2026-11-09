@@ -103,6 +103,11 @@ function install() {
     if(registered)return;registered=true;
     protocol.registerSchemesAsPrivileged([{scheme:'agy-suite',privileges:{standard:true,secure:true,bypassCSP:true,supportFetchAPI:true}}]);
     app.on('session-created',s=>{if(app.isReady())installSession(s);else app.whenReady().then(()=>installSession(s));});
+    app.on('window-all-closed',()=>{
+        // Closing the last visible desktop window is an explicit stop, even if
+        // the vendor's run-in-background preference is enabled.
+        if(process.env.ELECTRON_OZONE_PLATFORM_HINT!=='headless')app.quit();
+    });
     app.whenReady().then(()=>installSession(session.defaultSession));
     ipcMain.handle('agy-suite:control',control);
     ipcMain.handle('agy-suite:warning',event=>warn(event));

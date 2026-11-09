@@ -24,7 +24,7 @@ async def proxy(request):
     port = state.supervisor.active_port
     if state.busy or not port:
         if request.path == '/' and request.method == 'GET':
-            return web.FileResponse(state.static / 'portal.html')
+            raise web.HTTPFound('/?portal=1')
         return web.json_response({'ok': False, 'error': '核心引擎尚未就绪'}, status=503)
     scheme = state.cfg.get('backend_scheme', 'https')
     target = '%s://127.0.0.1:%d' % (scheme, port)
@@ -102,7 +102,7 @@ async def proxy(request):
                 data=re.sub(br'(<script\b[^>]*\bsrc=["\x27])(/main\.js)(?:\?[^"\x27]*)?(["\x27])',
                     lambda match:match[1]+match[2]+b'?agy_suite='+version.encode()+match[3],data,flags=re.I)
                 data = inject_privacy(data, state.active)
-                scripts=b'<script src="/__suite/stream-transport.js"></script><script src="/__suite/ide-ready.js"></script>'
+                scripts=b'<script src="/__suite/stream-transport.js"></script><script src="/__suite/ide-ready.js"></script><script src="/__suite/runtime-watch.js"></script>'
                 head=re.search(br'<head\b[^>]*>',data,re.I)
                 data=data[:head.end()]+scripts+data[head.end():] if head else scripts+data
                 guard=b'<script src="/__suite/logout-guard.js"></script>'

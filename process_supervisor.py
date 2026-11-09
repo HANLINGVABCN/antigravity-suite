@@ -20,6 +20,7 @@ class ProcessSupervisor:
         self.log_path=Path(log_path or self.runtime_home/'.config/Antigravity/logs/main.log')
         self.process=None; self.active_port=None; self.current_proxy_url=None
         self.is_restarting=False; self.last_error=''; self._running=True
+        self.exit_sequence=0
         self._lock=threading.RLock(); self._monitor_thread=None; self._xvfb=None
         self._temp=None
         self.native=False;self.run_uid=None;self.session_env={};self.config_dir=self.runtime_home/'.config/Antigravity'
@@ -35,7 +36,8 @@ class ProcessSupervisor:
         self.session_env=profile.get('native_env',{})
     def find_existing(self):
         for info in engine_processes():
-            if info['env'].get('HOME')==str(self.runtime_home) and config_dir_for(info)==self.config_dir.resolve():
+            if (Path(info['executable']).resolve()==Path(self.antigravity_bin).resolve()
+                    and info['env'].get('HOME')==str(self.runtime_home) and config_dir_for(info)==self.config_dir.resolve()):
                 if self.run_uid is None or info['uid']==self.run_uid:return info
         return None
     def adopt_existing(self):
@@ -44,9 +46,20 @@ class ProcessSupervisor:
             existing=self.find_existing()
             if not existing:return False
             self.process=ExistingProcess(existing);self.active_port=self.detect_port_from_log()
-            self.current_proxy_url=None
+            from process_tracking import process_environment
+            environment=process_environment(existing,('https_proxy','HTTPS_PROXY'))
+            self.current_proxy_url=environment.get('https_proxy') or environment.get('HTTPS_PROXY')
             self._start_monitor()
             return True
+    def refresh_runtime(self,adopt=True):
+        """Observe external opens/closes without launching a replacement process."""
+        with self._lock:
+            if self.is_restarting:return
+            if self.process and self.process.poll() is not None:
+                self.process=None;self.active_port=None;self.exit_sequence+=1
+            if self.process is None and adopt:self.adopt_existing()
+            if self.process and self.process.poll() is None:
+                self.active_port=self.detect_port_from_log()
     def _start_monitor(self):
         if not self._monitor_thread or not self._monitor_thread.is_alive():
             self._monitor_thread=threading.Thread(target=self._monitor_loop,daemon=True);self._monitor_thread.start()
@@ -148,17 +161,8 @@ class ProcessSupervisor:
         finally: self.is_restarting=False
     def _monitor_loop(self):
         while self._running:
-            with self._lock:
-                if not self._running: break
-                if not self.is_restarting and self.process:
-                    if self.process.poll() is not None:
-                        self.active_port=None
-                        try: self.start_antigravity(self.current_proxy_url)
-                        except Exception:
-                            logging.error('核心引擎自动重启失败；请检查 engine.log')
-                            # Avoid continuous auth/reconnect loops when the engine fails.
-                            self.process=None
-                    else: self.active_port=self.detect_port_from_log()
+            if not self._running:break
+            self.refresh_runtime()
             time.sleep(1)
     def close(self):
         self._running=False

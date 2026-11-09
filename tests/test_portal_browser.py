@@ -325,7 +325,8 @@ def test_exit_progress_and_login_entry_are_clear_and_reachable(portal):
     pw.expect(page.locator('#btn-exit-session')).to_be_disabled()
     assert page.locator('header #btn-exit-session').count()==0
     pw.expect(page.locator('#google-auth-notice')).to_contain_text('正在保存登录存档')
-    state.active=None;state.cfg['native_logged_out']=True;state.login_environment_open=True;state.supervisor.active_port=45000
+    from test_suite import FakeProcess
+    state.active=None;state.cfg['native_logged_out']=True;state.login_environment_open=True;state.supervisor.process=FakeProcess();state.supervisor.active_port=45000
     state.exit_state=dict(phase='ready',message='已退出配置')
     state.session_ops.desktop_status=dict(installed=True,renderer_ready=True)
     page.reload()
@@ -428,6 +429,41 @@ def test_core_button_stops_and_starts_the_same_profile_with_three_states(portal)
     page.evaluate('fetchStatus()');pw.expect(button).to_have_text('停止反重力')
 
 
+def test_core_button_follows_manual_process_changes_without_assuming_web_ready(portal):
+    page=portal['page'];state=portal['state'];state.active=portal['profile']['id']
+    from test_suite import FakeProcess
+    button=page.locator('#btn-engine-toggle')
+    state.supervisor.process=None;state.supervisor.active_port=None
+    page.evaluate('fetchStatus()');pw.expect(button).to_have_text('启动反重力')
+    state.supervisor.process=FakeProcess()
+    page.evaluate('fetchStatus()');pw.expect(button).to_have_text('停止反重力');pw.expect(button).to_be_enabled()
+    state.supervisor.active_port=45000
+    page.evaluate('fetchStatus()');pw.expect(button).to_have_text('停止反重力')
+    state.supervisor.process=None
+    page.evaluate('fetchStatus()');pw.expect(button).to_have_text('启动反重力');pw.expect(button).to_be_enabled()
+    assert state.cfg['engine_stopped']
+
+
+def test_native_page_returns_to_panel_only_after_confirmed_stop(portal):
+    page=portal['page'];state=portal['state']
+    from test_suite import FakeProcess
+    state.supervisor.process=FakeProcess();state.supervisor.active_port=45000
+    page.route('**/__suite/api/status',lambda route:route.abort())
+    page.add_script_tag(url=portal['url']+'/__suite/runtime-watch.js')
+    page.wait_for_timeout(2200)
+    assert page.url.endswith('/?portal=1')
+    # Use a different native-page route to verify replacement navigation.
+    page.unroute('**/__suite/api/status')
+    page.route('**/native-fixture',lambda route:route.fulfill(status=200,content_type='text/html',
+        body='<html><body>Native fixture<script src="/__suite/runtime-watch.js"></script></body></html>'))
+    page.goto(portal['url']+'/native-fixture')
+    state.busy=True;state.supervisor.process=None
+    page.wait_for_timeout(2200);assert page.url.endswith('/native-fixture')
+    state.busy=False
+    page.wait_for_url(portal['url']+'/?portal=1')
+    pw.expect(page.locator('#btn-engine-toggle')).to_have_text('启动反重力')
+
+
 def test_export_two_independent_choices_are_visible_and_explain_contents(portal):
     page=portal['page'];page.locator('#profile-container button:has-text("导出")').click()
     history=page.locator('#export-include-history');proxy=page.locator('#export-include-proxy')
@@ -474,14 +510,18 @@ def test_logged_out_login_entry_survives_refresh_and_starts_before_entering(port
         button.click()
     pw.expect(button).to_have_text('正在打开登录界面…');pw.expect(button).to_be_disabled()
     page.reload();pw.expect(button).to_be_visible();pw.expect(button).to_have_text('正在打开登录界面…')
-    state.opening_login=False;state.login_environment_open=True;state.supervisor.active_port=45000
+    from test_suite import FakeProcess
+    state.opening_login=False;state.login_environment_open=True;state.supervisor.process=FakeProcess();state.supervisor.active_port=45000
     page.evaluate('fetchStatus()');pw.expect(button).to_have_text('进入登录界面')
     pw.expect(button).to_be_enabled();assert page.url.endswith('/?portal=1')
 
 
 def test_ready_profile_button_receives_click_after_pointer_release_without_refresh(portal):
     page=portal['page'];state=portal['state'];identifier=portal['profile']['id']
-    state.active=identifier;state.supervisor.active_port=45000;page.evaluate('fetchStatus()')
+    from test_suite import FakeProcess
+    state.active=identifier;state.supervisor.process=FakeProcess();state.supervisor.active_port=45000
+    state.engine_proxy_url=state.supervisor.current_proxy_url='http://127.0.0.1:49999'
+    state.native_runtime_proxy_id=portal['node']['id'];page.evaluate('fetchStatus()')
     button=page.locator('[data-launch-id="'+identifier+'"]');pw.expect(button).to_have_text('进入')
     # Simulate a status change landing while the pointer is down.
     button.hover();page.mouse.down();state.profiles.get_profile(identifier)['name']='Changed while pressed'

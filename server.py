@@ -47,6 +47,7 @@ class SuiteState:
         self.exit_task=None;self.exit_state=dict(phase='idle',message='')
         self.opening_login=False
         self.login_environment_open=False
+        self._runtime_running=None;self._runtime_identity=None;self._runtime_exit_sequence=0
         from native_control import NativeControl
         from session_operations import SessionOperations
         self.native_controls=NativeControl(self);self.session_ops=SessionOperations(self)
@@ -79,25 +80,44 @@ class SuiteState:
                     self.active=imported[0];self.persist()
                 for identifier in imported:
                     if identifier!=self.cfg.get('default_profile_id'):self.request_detection(identifier)
-            # Recover only the instance matching the active profile's exact HOME/config.
-            # Desktop-launched native profiles are visible even before the project starts them.
-            running=bool(self.supervisor.process and self.supervisor.process.poll() is None)
-            if not running and not self.starting_profile_id and not self.busy and not self.cfg.get('engine_stopped'):
-                candidates=[]
-                if self.profiles.get_profile(self.active):candidates.append(self.profiles.get_profile(self.active))
-                common=self.profiles.native_runtime.binding
-                if common and common['profile_id']!=self.active:
-                    candidate=self.profiles.get_profile(common['profile_id'])
-                    if candidate and not candidate.get('internal_runtime'):candidates.append(candidate)
-                for p in candidates:
-                    self.bind_engine_home(p['id'])
-                    adopted=await asyncio.to_thread(self.supervisor.adopt_existing)
-                    if adopted:
-                        self.active=p['id'];self.loaded=p['id'];self.persist()
-                        self.native_runtime_proxy_id=None
-                        break
-                if self.profiles.get_profile(self.active):self.bind_engine_home(self.active)
+            await self.observe_runtime()
             await self.sync_native_login()
+
+    async def observe_runtime(self):
+        if self.busy or self.starting_profile_id or self.opening_login or self.updater.busy():return
+        if self.installer.task and not self.installer.task.done():return
+        if hasattr(self.supervisor,'refresh_runtime'):
+            if self.profiles.get_profile(self.active):self.bind_engine_home(self.active)
+            else:
+                spec=self.session_ops.runtime()
+                if spec and hasattr(self.supervisor,'configure_native'):self.supervisor.configure_native(spec)
+            await asyncio.to_thread(self.supervisor.refresh_runtime)
+        process=self.supervisor.process
+        running=bool(process and process.poll() is None)
+        identity=(getattr(process,'pid',id(process)),getattr(process,'identity',None)) if running else None
+        exits=getattr(self.supervisor,'exit_sequence',0)
+        changed=False
+        if running:
+            if self.cfg.get('engine_stopped'):
+                self.cfg['engine_stopped']=False;changed=True
+            if identity!=self._runtime_identity:
+                self._auth_cache=None
+                profile=self.profiles.get_profile(self.active)
+                if hasattr(self.supervisor,'current_proxy_url'):
+                    observed_proxy=self.supervisor.current_proxy_url
+                    self.native_runtime_proxy_id=(profile.get('proxy_id') or None) if profile and observed_proxy and observed_proxy==self.engine_proxy_url else None
+                self.native_requires_restart=bool(profile and (profile.get('proxy_id') or None)!=self.native_runtime_proxy_id)
+            if self.active:self.loaded=self.active
+            if self.cfg.get('native_logged_out'):self.login_environment_open=True
+        elif self._runtime_running is True or exits>self._runtime_exit_sequence:
+            self.cfg['engine_stopped']=True;self.login_environment_open=False;self._auth_cache=None
+            self.native_requires_restart=False;changed=True
+        self._runtime_running=running;self._runtime_identity=identity;self._runtime_exit_sequence=exits
+        if changed:self.persist()
+
+    async def refresh_runtime_status(self):
+        if self.lock.locked():return
+        async with self.lock:await self.observe_runtime()
 
     async def sync_native_login(self, force=False):
         if not self.discovery_enabled or self.updater.busy():return
@@ -156,7 +176,7 @@ class SuiteState:
             if running:self.native_runtime_proxy_id=None
         self.native_requires_restart=running and (profile.get('proxy_id') or None)!=self.native_runtime_proxy_id
         self.persist()
-        if not self.native_requires_restart and not self.busy:self.request_detection(profile['id'])
+        if running and not self.native_requires_restart and not self.busy:self.request_detection(profile['id'])
     def prune_imports(self):
         now=time.time()
         for token,item in list(self.pending_imports.items()):
@@ -366,7 +386,9 @@ class SuiteState:
         if not p and self.login_environment_open and self.native_runtime_proxy_id:px=self.proxies.get_proxy(self.native_runtime_proxy_id)
         if px: px={k:v for k,v in px.items() if k!='password'}
         port=None if self.busy or self.starting_profile_id or self.native_requires_restart else self.supervisor.active_port
-        return dict(active_profile=p,active_profile_id=self.active,active_proxy=px,
+        running=bool(self.supervisor.process and self.supervisor.process.poll() is None)
+        if not running:port=None
+        return dict(active_profile=p,active_profile_id=self.active,active_proxy=px,engine_running=running,
                     default_profile_id=self.cfg.get('default_profile_id'),antigravity_ready=bool(port),
                     antigravity_port=port,active_port=port,busy=self.busy,last_error=self.last_error,
                     starting_profile_id=self.starting_profile_id,diagnostics=self.diagnostics,
@@ -482,7 +504,9 @@ async def api(request):
         return response
     if path=='logout' and method=='POST':
         response=ok(); response.del_cookie('ag_session',path='/'); return response
-    if path=='status' and method=='GET': return web.json_response(s.status())
+    if path=='status' and method=='GET':
+        await s.refresh_runtime_status()
+        return web.json_response(s.status())
     if path=='sessions/login-begin' and method=='POST':
         async with s.lock:
             await s.ensure_switch_allowed()
@@ -712,6 +736,7 @@ async def api(request):
         async with s.lock: nodes=await asyncio.to_thread(s.proxies.import_links,d.get('links',''))
         return ok(proxies=[{k:v for k,v in node.items() if k!='password'} for node in nodes])
     if path=='system/core-status' and method=='GET':
+        await s.refresh_runtime_status()
         proc=s.supervisor.process
         file=Path(s.cfg['antigravity_bin'])
         installed=bool(s.discovered['binary']) if s.discovery_enabled else s.supervisor.installed()
@@ -812,7 +837,9 @@ async def page(request):
         if s.updater.busy() or s.service_restart.busy():return web.json_response(dict(ok=False,error='项目正在更新或后台正在重启'),status=409)
         operation=data.get('operation');fields=data.get('fields',{})
         if not isinstance(fields,dict):raise web.HTTPBadRequest()
-        if operation=='status':return web.json_response(dict(ok=True,**s.native_controls.minimal_status()))
+        if operation=='status':
+            await s.refresh_runtime_status()
+            return web.json_response(dict(ok=True,**s.native_controls.minimal_status()))
         if operation=='ready':
             current=s.session_ops.runtime()
             if not current or current.get('id')!=spec['id']:raise web.HTTPForbidden()
@@ -852,6 +879,7 @@ async def page(request):
     if request.path=='/__suite/logout-guard.js': return web.FileResponse(s.static/'logout-guard.js')
     if request.path=='/__suite/stream-transport.js': return web.FileResponse(s.static/'stream-transport.js')
     if request.path=='/__suite/ide-ready.js': return web.FileResponse(s.static/'ide-ready.js')
+    if request.path=='/__suite/runtime-watch.js': return web.FileResponse(s.static/'runtime-watch.js')
     if request.path=='/__suite/native-stream':
         from stream_transport import subscription
         return await subscription(request)
@@ -859,6 +887,10 @@ async def page(request):
     if request.path=='/__suite/portal' or (request.path=='/' and 'portal' in request.query):
         return web.FileResponse(s.static/'portal.html',headers={'Cache-Control':'no-store'})
     if request.path.startswith('/__suite/'): raise web.HTTPNotFound()
+    if request.path=='/' and request.method in ('GET','HEAD'):
+        await s.refresh_runtime_status()
+        if not s.supervisor.active_port or not (s.supervisor.process and s.supervisor.process.poll() is None):
+            raise web.HTTPFound('/?portal=1')
     if s.native_requires_restart or (s.cfg.get('native_logged_out') and not s.login_environment_open):
         if request.method in ('GET','HEAD'):raise web.HTTPFound('/?portal=1')
         return web.json_response(dict(ok=False,error='当前原生会话未登录，或需要按该配置的代理重新启动，请在配置页面选择账号'),status=409)

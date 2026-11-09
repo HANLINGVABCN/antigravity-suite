@@ -140,6 +140,12 @@ sudo systemctl start antigravity-suite-improved
 
 ## 排错
 
+### 网页与虚拟桌面的外观
+
+本项目转发当前反重力实例的原生 Web 页面，桌面窗口也从同一个语言服务器加载页面。官方客户端会检测 Electron 提供的原生能力，因此桌面有应用菜单、窗口按钮和原生文件对话框，浏览器采用 Web 布局；浏览器与桌面窗口的本地界面状态分别保存，选中的对话、项目和展开位置不要求同步。相同账号和聊天库不代表两个窗口必须停留在同一屏幕。本项目不向公网浏览器暴露 Electron 的本机文件或命令接口来强行模拟桌面环境。
+
+手动关闭最后一个桌面窗口后，v0.9.9 保持停止，面板显示启动；手动重新打开则识别实际进程并显示停止。未运行时访问网址自动进入控制面板，已经打开的网页也会在确认关闭后返回面板。
+
 ```bash
 systemctl status antigravity-suite-improved
 journalctl -u antigravity-suite-improved -f

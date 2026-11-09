@@ -835,4 +835,5 @@ let currentStatus = null;
         }
 
         fetchStatus();
-        setInterval(fetchStatus, 4000);
+        setInterval(fetchStatus, 2000);
+        document.addEventListener('visibilitychange',()=>{if(!document.hidden)fetchStatus();});

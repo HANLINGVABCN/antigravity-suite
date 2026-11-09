@@ -108,7 +108,7 @@ def test_supervisor_adopts_matching_home_without_launching_duplicate(tmp_path,mo
         args=['/opt/antigravity/antigravity'],env={'HOME':str(home)},raw='')
     import process_supervisor
     monkeypatch.setattr(process_supervisor,'engine_processes',lambda:[instance])
-    s=ProcessSupervisor(runtime_home=home)
+    s=ProcessSupervisor(antigravity_bin=instance['executable'],runtime_home=home)
     monkeypatch.setattr(s,'detect_port_from_log',lambda:41001)
     monkeypatch.setattr(s,'_start_monitor',lambda:None)
     monkeypatch.setattr(process_supervisor.subprocess,'Popen',lambda *a,**kw:pytest.fail('must not launch duplicate'))

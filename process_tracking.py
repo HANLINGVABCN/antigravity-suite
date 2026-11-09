@@ -9,6 +9,24 @@ from pathlib import Path
 from discovery import process_info
 
 
+def process_environment(info,keys):
+    """Read only selected fields, using the native user in restricted containers."""
+    fields={key:info.get('env',{}).get(key) for key in keys if key in info.get('env',{})}
+    if fields:return fields
+    if not hasattr(os,'geteuid') or os.geteuid()!=0 or not info.get('uid'):return fields
+    import pwd,sys
+    account=pwd.getpwuid(info['uid'])
+    script="import json;from pathlib import Path;p=Path('/proc')/str("+str(info['pid'])+");s=(p/'stat').read_text().rsplit(')',1)[1].split();assert s[19]=="+repr(str(info['start_time']))+";e=dict(x.split('=',1) for x in (p/'environ').read_bytes().decode().split('\\0') if '=' in x);print(json.dumps({k:e[k] for k in "+repr(tuple(keys))+" if k in e}))"
+    try:
+        result=subprocess.run([getattr(sys,'_base_executable',sys.executable),'-B','-c',script],
+                              user=account.pw_uid,group=account.pw_gid,extra_groups=[],capture_output=True,text=True,timeout=3)
+        if result.returncode==0:
+            value=json.loads(result.stdout)
+            if isinstance(value,dict):return {k:v for k,v in value.items() if k in keys and isinstance(v,str)}
+    except (OSError,subprocess.TimeoutExpired,ValueError):pass
+    return fields
+
+
 class ExistingProcess:
     def __init__(self,info):self.pid=info['pid'];self.identity=info['start_time']
     def poll(self):
