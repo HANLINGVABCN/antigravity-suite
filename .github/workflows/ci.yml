@@ -59,6 +59,6 @@ jobs:
       - name: Install browser test dependencies
         run: |
           python -m pip install -r requirements-browser.txt
-          python -m playwright install --with-deps chromium
+          python -m playwright install --with-deps --no-shell chromium
       - name: Responsive layouts and interaction regressions
         run: python -m pytest -q tests/test_portal_browser.py

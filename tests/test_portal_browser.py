@@ -21,7 +21,11 @@ from test_suite import PASSWORD, FakeSupervisor, config, start
 @pytest.fixture(scope='module')
 def chromium():
     with pw.sync_playwright() as runtime:
-        browser = runtime.chromium.launch(headless=True, executable_path=os.environ.get('ANTIGRAVITY_TEST_BROWSER') or None,
+        executable = os.environ.get('ANTIGRAVITY_TEST_BROWSER') or None
+        # Use the full browser's headless mode for real media capture checks.
+        # Headless Shell does not provide the same media-device implementation.
+        browser = runtime.chromium.launch(headless=True, executable_path=executable,
+                                          channel=None if executable else 'chromium',
                                           args=['--use-fake-device-for-media-stream'])
         yield browser
         browser.close()
