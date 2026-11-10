@@ -16,9 +16,10 @@ from config import atomic_json
 from shared_history import SharedHistory
 
 IGNORE = {'SingletonLock', 'SingletonSocket', 'SingletonCookie', 'Crashpad'}
-def safe_copytree(src, dst):
+def safe_copytree(src, dst, exclude=()):
+    root=Path(src)
     def ignore(path, names):
-        return [n for n in names if n in IGNORE or n.startswith('Singleton') or 'Cache' in n
+        return [n for n in names if (Path(path)==root and n in exclude) or n in IGNORE or n.startswith('Singleton') or 'Cache' in n
                 or Path(path,n).is_symlink() or not (Path(path,n).is_dir() or Path(path,n).is_file())]
     shutil.copytree(src, dst, ignore=ignore, dirs_exist_ok=True)
 

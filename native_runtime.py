@@ -3,6 +3,7 @@ import json
 import hashlib
 import os
 import shutil
+import tempfile
 import time
 from pathlib import Path
 
@@ -209,6 +210,7 @@ class NativeRuntime:
 
     def snapshot_to_private(self, profile_id):
         from profile_manager import safe_copytree,remove_path
+        from shared_history import HISTORY_ENTRIES
         spec=self.spec_for(profile_id)
         profile=self.manager.get_profile(profile_id)
         if not spec or profile.get('kind')=='existing':
@@ -218,6 +220,18 @@ class NativeRuntime:
         for name,dest in targets(home).items():
             src=targets(spec['native_home'],spec['native_config_dir'])[name]
             dest.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+            if name=='gemini_antigravity':
+                # Preserve one shared history library. Copying it back into every
+                # profile HOME turns each save into another full migration backup.
+                self.manager.history.merge_native(src)
+                self.manager.history.merge_native(dest)
+                with tempfile.TemporaryDirectory(dir=dest.parent,prefix='.history-metadata-') as temporary:
+                    staged=Path(temporary)/'antigravity'
+                    if src.is_dir():safe_copytree(src,staged,exclude=HISTORY_ENTRIES)
+                    else:staged.mkdir(mode=0o700)
+                    remove_path(dest)
+                    os.replace(staged,dest)
+                continue
             remove_path(dest)
             if src.is_dir():safe_copytree(src,dest)
             elif src.is_file():shutil.copy2(src,dest)

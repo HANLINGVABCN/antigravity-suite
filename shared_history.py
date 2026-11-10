@@ -9,6 +9,7 @@ from pathlib import Path
 
 DIRECTORIES=('conversations','brain')
 DATABASE='conversation_summaries.db'
+HISTORY_ENTRIES=frozenset((*DIRECTORIES,DATABASE,DATABASE+'-wal',DATABASE+'-shm',DATABASE+'-journal'))
 
 
 class SharedHistory:
