@@ -1,5 +1,6 @@
 """A shared local conversation library, separate from every account's credentials."""
 import hashlib
+import json
 import os
 import shutil
 import sqlite3
@@ -14,9 +15,39 @@ HISTORY_ENTRIES=frozenset((*DIRECTORIES,DATABASE,DATABASE+'-wal',DATABASE+'-shm'
 
 class SharedHistory:
     def __init__(self,data_dir):
-        self.root=Path(data_dir)/'shared-history'
+        self.data_dir=Path(data_dir)
+        self.legacy_root=self.data_dir/'shared-history'
+        self.location=self.data_dir/'history-location.json'
+        self.root=Path(json.loads(self.location.read_text())['root']) if self.location.is_file() else self.legacy_root
         self.root.mkdir(parents=True,exist_ok=True,mode=0o700)
         for name in DIRECTORIES:(self.root/name).mkdir(exist_ok=True,mode=0o700)
+
+    def use_native(self,native):
+        """Fix the library at the original client's directory; no ongoing syncing."""
+        native=Path(native)
+        if native.is_symlink():raise ValueError('聊天目录不能是符号链接')
+        linked=[native/name for name in (*DIRECTORIES,DATABASE) if (native/name).is_symlink()]
+        if linked:
+            parents={p.resolve().parent for p in linked}
+            if len(linked)!=3 or len(parents)!=1:raise ValueError('旧聊天链接指向不同位置，请先恢复原目录')
+            native=next(iter(parents))
+        native=native.resolve()
+        if self.location.is_file() and self.root.resolve()!=native:raise ValueError('聊天库位置已固定，不能随账号改变')
+        native.mkdir(parents=True,exist_ok=True,mode=0o700)
+        for name in DIRECTORIES:
+            path=native/name
+            if path.is_symlink():raise ValueError('聊天目录入口不能指向其他库')
+            path.mkdir(exist_ok=True,mode=0o700)
+        self.root=native
+        from history_transfer import recover
+        recover(self)
+        if not self.location.exists():
+            from config import atomic_json
+            atomic_json(self.location,dict(version=2,root=str(native)))
+
+    def prepare_import(self,sources,mode):
+        from history_transfer import HistoryTransfer
+        return HistoryTransfer(self,sources,mode)
 
     def merge_tree(self,source,dest):
         source,dest=Path(source),Path(dest)

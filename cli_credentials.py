@@ -62,14 +62,12 @@ class CliCredentials:
             raise ValueError('CLI 登录文件已指向其他位置，未覆盖；请检查原链接')
         return source, alias
 
-    def backup(self, path):
-        folder = self.manager.data_dir / 'cli-credential-backups' / str(time.time_ns())
-        folder.mkdir(parents=True, mode=0o700)
-        raw = path.read_bytes()
-        fd = os.open(folder / path.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, 'wb') as stream:
-            stream.write(raw)
-        return raw
+    def preserve_distinct_login(self,metadata,raw):
+        from account_storage import TOKEN,write_bytes
+        for profile in self.manager.list_profiles():
+            if any(t['fingerprint']==metadata['fingerprint'] for t in self.manager.saved_token_metadata(profile['id'])):return
+        profile=self.manager.create_profile('CLI 登录-'+(metadata['email'] or '账号'),email=metadata['email'])
+        write_bytes(self.manager.profile_dir(profile['id'])/'store'/TOKEN,raw)
 
     @staticmethod
     def expiry(value):
@@ -106,13 +104,11 @@ class CliCredentials:
                                    and self.expiry(json.loads(alias_before)) > self.expiry(json.loads(source_before)))
             if alias.read_bytes() != alias_before:
                 raise ValueError('CLI 凭据正在更新，请稍后重试共用登录')
-            self.backup(alias)
+            if native and cli['fingerprint']!=native['fingerprint']:self.preserve_distinct_login(cli,alias_before)
         uid = spec['native_uid']
         import pwd
         gid = pwd.getpwuid(uid).pw_gid
         if adopt:
-            if source_before is not None:
-                self.backup(source)
             if source.exists() and source.read_bytes() != source_before:
                 raise ValueError('桌面凭据正在更新，请稍后重试 CLI 共用登录')
             atomic_json(source, json.loads(alias_before))

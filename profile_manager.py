@@ -9,7 +9,6 @@ import time
 import uuid
 import hashlib
 import base64
-import sqlite3
 import socket
 from pathlib import Path, PurePosixPath
 from config import atomic_json
@@ -56,15 +55,16 @@ class ProfileManager:
             (self.home / '.gemini/antigravity', 'gemini_antigravity'),
             (self.home / '.config/antigravity', 'antigravity_credentials')]
     def home_for(self, p_id):
-        profile=self.get_profile(p_id)
-        spec=self.native_runtime.spec_for(p_id)
-        if spec:return Path(spec['native_home'])
-        return self.profile_dir(p_id) / 'home'
+        if not self.get_profile(p_id):raise ValueError('档案不存在')
+        spec=self.native_runtime.spec_for(p_id) or self.native_runtime.selected or (self.native_runtime.binding or {}).get('native')
+        return Path(spec['native_home']) if spec else self.legacy_home
+
     def bind_home(self, p_id):
         home = self.home_for(p_id)
         if home.is_symlink(): raise ValueError('档案运行目录不能是符号链接')
         self._set_home(home)
         self.bound_profile = p_id
+        if not self.history.location.exists():self.history.use_native(home/'.gemini/antigravity')
         profile=self.get_profile(p_id)
         spec=self.native_runtime.spec_for(p_id)
         if spec:
@@ -111,14 +111,10 @@ class ProfileManager:
         if item.get('email')!=email or item.get('token_present')!=present:
             item.update(email=email,token_present=present);self._save()
     def file_in_home(self,p_id,relative):
-        parts=PurePosixPath(relative).parts
-        roots={'jetski-standalone-oauth-token':'.gemini/jetski-standalone-oauth-token','Antigravity_config':'.config/Antigravity','gemini_antigravity':'.gemini/antigravity','antigravity_credentials':'.config/antigravity'}
-        if not parts or parts[0] not in roots:return None
-        home=self.home_for(p_id)
-        path=home/roots[parts[0]]
-        if len(parts)>1:path=path.joinpath(*parts[1:])
-        if not path.resolve().is_relative_to(home.resolve()):raise ValueError('共享聊天记录不能通过档案文件编辑器覆盖')
-        return path
+        from account_storage import TOKEN,working_file
+        if relative!=TOKEN or self.bound_profile!=p_id:return None
+        return working_file(self.home_for(p_id))
+
     def _save(self): atomic_json(self.meta_file, self.profiles)
     def list_profiles(self): return copy.deepcopy([p for p in self.profiles if not p.get('internal_runtime') and not p.get('pending_native_import')])
 
@@ -142,8 +138,9 @@ class ProfileManager:
 
     def saved_token_metadata(self, profile_id):
         folder=self.profile_dir(profile_id)
-        return [value for value in (self.installed_token(folder/'store/jetski-standalone-oauth-token'),
-            self.installed_token(folder/'home/.gemini/jetski-standalone-oauth-token')) if value]
+        current=self.installed_token(folder/'store/jetski-standalone-oauth-token')
+        fallback=self.installed_token(folder/'home/.gemini/jetski-standalone-oauth-token') if current is None else None
+        return [value for value in (current,fallback) if value]
 
     def account_matches(self, profile_id, token):
         if not token:return False
@@ -159,54 +156,14 @@ class ProfileManager:
         return next((p for p in candidates if self.account_matches(p['id'],token)),None)
 
     def capture_installed_account(self, profile, native, expected_token=None):
-        from native_runtime import targets
-        folder=self.profile_dir(profile['id'])
-        stage=Path(tempfile.mkdtemp(prefix='.installed-account-',dir=folder))
-        backup=None
-        try:
-            for name,source in targets(native['native_home'],native['native_config_dir']).items():
-                target=stage/name
-                if source.is_dir():
-                    safe_copytree(source,target)
-                    # Capture committed SQLite/WAL state if the desktop app is still running.
-                    for file in target.rglob('*'):
-                        if not file.is_file():continue
-                        with file.open('rb') as stream:header=stream.read(16)
-                        if header!=b'SQLite format 3\0':continue
-                        original=source/file.relative_to(target)
-                        fd,snapshot=tempfile.mkstemp(prefix='.sqlite-import-',dir=self.data_dir)
-                        os.close(fd);saved=Path(snapshot)
-                        incoming=outgoing=None
-                        try:
-                            incoming=sqlite3.connect('file:'+original.as_posix()+'?mode=ro',uri=True,timeout=3)
-                            outgoing=sqlite3.connect(saved)
-                            incoming.backup(outgoing)
-                            incoming.close();outgoing.close()
-                            os.replace(saved,file)
-                        finally:
-                            if incoming:incoming.close()
-                            if outgoing:outgoing.close()
-                            saved.unlink(missing_ok=True)
-                        for suffix in ('-wal','-shm','-journal'):
-                            (file.parent/(file.name+suffix)).unlink(missing_ok=True)
-                elif source.is_file():shutil.copy2(source,target)
-            if expected_token:
-                captured=self.installed_token(stage/'jetski-standalone-oauth-token')
-                if not captured or captured['fingerprint']!=expected_token['fingerprint']:
-                    raise ValueError('原生登录在提取期间发生变化，请稍后重试')
-            old=folder/'store'
-            if old.exists():
-                backup=self.data_dir/'installed-account-backups'/str(time.time_ns())/profile['id']
-                backup.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
-                os.replace(old,backup)
-            os.replace(stage,old)
-            self.history.merge_native(Path(native['native_home'])/'.gemini/antigravity')
-        except Exception:
-            if backup and backup.exists():
-                remove_path(folder/'store');os.replace(backup,folder/'store')
-            raise
-        finally:
-            if stage.exists():shutil.rmtree(stage)
+        from account_storage import TOKEN,read_bytes,write_bytes,working_file
+        source=working_file(native['native_home'])
+        metadata=self.installed_token(source)
+        if not metadata or (expected_token and metadata['full_fingerprint']!=expected_token['full_fingerprint']):
+            raise ValueError('原生登录在提取期间发生变化，请稍后重试')
+        value=read_bytes(source)
+        if self.installed_token(source)!=metadata:raise ValueError('原生登录正在更新，请稍后重试')
+        write_bytes(self.profile_dir(profile['id'])/'store'/TOKEN,value)
 
     def import_installed_accounts_once(self, machine_name=None):
         marker=self.data_dir/'installed-account-import.json'
@@ -215,7 +172,6 @@ class ProfileManager:
         default_name='默认配置-'+(machine_name or socket.gethostname())
         original=copy.deepcopy(self.profiles);imported=[]
         original_binding=copy.deepcopy(self.native_runtime.binding)
-        atomic_json(self.data_dir/'installed-account-profile-backup.json',original)
         try:
             for native in self.native_runtime.installations:
                 token=self.installed_token(Path(native['native_home'])/'.gemini/jetski-standalone-oauth-token')
@@ -259,6 +215,26 @@ class ProfileManager:
             if original_binding:atomic_json(self.native_runtime.file,original_binding)
             else:self.native_runtime.file.unlink(missing_ok=True)
             raise
+    def migrate_account_layout_once(self,native):
+        """Upgrade old snapshots once; leave archive directories and IDs in place."""
+        from account_storage import TOKEN,read_bytes,write_bytes
+        marker=self.data_dir/'account-layout-v2.json'
+        self.history.use_native(Path(native['native_home'])/'.gemini/antigravity')
+        if marker.is_file():return False
+        roots=[self.history.legacy_root,self.legacy_home/'.gemini/antigravity']
+        for profile in self.profiles:
+            folder=self.profile_dir(profile['id'])
+            roots.extend([folder/'store/gemini_antigravity',folder/'home/.gemini/antigravity'])
+            canonical=folder/'store'/TOKEN
+            if not canonical.exists():
+                value=read_bytes(folder/'home/.gemini'/TOKEN)
+                if value is not None:write_bytes(canonical,value)
+        seen={self.history.root.resolve()}
+        for root in roots:
+            if root.exists() and root.resolve() not in seen:
+                self.history.merge_native(root);seen.add(root.resolve())
+        atomic_json(marker,dict(version=2,root=str(self.history.root),completed_at=time.time()))
+        return True
     def get_profile(self, p_id): return next((p for p in self.profiles if p['id']==p_id), None)
     def profile_dir(self, p_id):
         if not isinstance(p_id,str) or not re.fullmatch(r'[a-f0-9]{8,32}',p_id) or not self.get_profile(p_id):
@@ -288,7 +264,6 @@ class ProfileManager:
         if hashlib.sha256(json.dumps(value,sort_keys=True,ensure_ascii=True).encode()).hexdigest()!=expected['full_fingerprint']:raise ValueError('凭据仍在更新，请稍后重试')
         folder=self.profile_dir(p_id)
         atomic_json(folder/'store/jetski-standalone-oauth-token',value)
-        if (folder/'home/.suite-home-initialized').is_file():atomic_json(folder/'home/.gemini/jetski-standalone-oauth-token',value)
     def update_profile(self,p_id,name=None,proxy_id=None,email=None):
         p=self.get_profile(p_id)
         if not p: raise ValueError('档案不存在')
@@ -319,124 +294,45 @@ class ProfileManager:
             self.native_runtime.binding=None
             self.native_runtime.file.unlink(missing_ok=True)
     def save_active_to_profile(self,p_id):
-        profile=self.get_profile(p_id)
-        if profile and profile.get('kind')!='existing' and self.bound_profile is not None and self.bound_profile!=p_id:return False
-        native=self.native_runtime.spec_for(p_id)
-        if not native and profile and profile.get('kind')!='existing':
-            native=next((p for p in self.native_runtime.installations if Path(p['native_home']).resolve()==self.home.resolve()),None)
-        if native and profile and profile.get('kind')!='existing':
-            current=self.installed_token(Path(native['native_home'])/'.gemini/jetski-standalone-oauth-token')
-            if not self.account_matches(p_id,current):return False
-        if profile and profile.get('kind')=='existing':
-            # Snapshot credentials but never overwrite the native runtime during restore.
-            self.bind_home(p_id)
-            self.history.merge_native(Path(profile['native_home'])/'.gemini/antigravity')
-        folder=self.profile_dir(p_id)
-        stage=Path(tempfile.mkdtemp(prefix='.snapshot-',dir=folder))
-        old=folder/'.previous-store'
-        try:
-            for src,name in self.runtime_targets:
-                if src.is_symlink(): raise ValueError('运行目录不能是符号链接')
-                if src.is_dir(): safe_copytree(src,stage/name)
-                elif src.is_file(): shutil.copy2(src,stage/name)
-            remove_path(old)
-            if (folder/'store').exists(): os.replace(folder/'store',old)
-            try: os.replace(stage,folder/'store')
-            except Exception:
-                if old.exists(): os.replace(old,folder/'store')
-                raise
-            remove_path(old)
-            self.get_profile(p_id)['last_used_at']=time.strftime('%Y-%m-%d %H:%M:%S')
-            self._save()
-            self.native_runtime.snapshot_to_private(p_id)
-            return True
-        finally: remove_path(stage)
+        from account_storage import save_current
+        saved=save_current(self,p_id)
+        if saved:
+            self.get_profile(p_id)['last_used_at']=time.strftime('%Y-%m-%d %H:%M:%S');self._save()
+        return saved
+
     def restore_profile(self,p_id):
-        store=self.profile_dir(p_id)/'store'
-        if not store.is_dir(): raise ValueError('档案存储目录不存在')
+        from account_storage import archive_bytes,working_file,read_bytes,write_bytes
+        if self.native_runtime.selected or self.native_runtime.spec_for(p_id):
+            self.native_runtime.activate(p_id);self.bind_home(p_id);return True
         self.bind_home(p_id)
-        profile=self.get_profile(p_id)
-        spec=self.native_runtime.spec_for(p_id)
-        if spec and profile.get('kind')!='existing':
-            self.history.sync_native(self.home/'.gemini/antigravity',spec['native_uid'])
-            return True
-        if profile.get('kind')=='existing':
-            if not profile.get('available'):raise ValueError('已有配置当前不可接管，请检查本体和目录权限')
-            self.history.sync_native(self.home/'.gemini/antigravity',profile['native_uid'])
-            self.refresh_existing_metadata(p_id)
-            return True
-        marker=self.home/'.suite-home-initialized'
-        if marker.exists():
-            # The persistent per-profile HOME is authoritative after migration.
-            # Do not replace conversations with an older credential snapshot.
-            self.history.attach(self.home)
-            return True
-        with tempfile.TemporaryDirectory(dir=self.home,prefix='.restore-') as tmp:
-            staged=Path(tmp)/'new'; staged.mkdir()
-            backup=Path(tmp)/'old'; backup.mkdir()
-            for _,name in self.runtime_targets:
-                src=store/name
-                if src.is_symlink(): raise ValueError('档案不能包含符号链接')
-                if src.is_dir(): safe_copytree(src,staged/name)
-                elif src.is_file(): shutil.copy2(src,staged/name)
-            changed=[]
-            try:
-                for dest,name in self.runtime_targets:
-                    dest.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
-                    if dest.exists() or dest.is_symlink(): os.replace(dest,backup/name)
-                    changed.append((dest,name))
-                    if (staged/name).exists(): os.replace(staged/name,dest)
-            except Exception:
-                for dest,name in reversed(changed):
-                    remove_path(dest)
-                    if (backup/name).exists() or (backup/name).is_symlink(): os.replace(backup/name,dest)
-                raise
-        self.get_profile(p_id)['last_used_at']=time.strftime('%Y-%m-%d %H:%M:%S')
-        self._save()
-        marker.write_text('1',encoding='ascii')
-        self.history.attach(self.home)
+        target=working_file(self.home)
+        value=archive_bytes(self,p_id)
+        if read_bytes(target)!=value:write_bytes(target,value)
         return True
-    def export_profile(self,p_id,output_path,proxy=None,include_history=True):
-        folder=self.profile_dir(p_id)
+
+    def export_profile(self,p_id,output_path,proxy=None,include_history=False):
+        from account_storage import TOKEN,archive_bytes
         profile=self.get_profile(p_id)
         metadata={key:profile.get(key) for key in ('id','name','email','proxy_id','created_at','last_used_at')}
+        metadata['format_version']=2
         metadata['export_options']=dict(include_history=bool(include_history),include_proxy=proxy is not None)
-        atomic_json(folder/'profile.json',metadata)
-        def exclude_history(info):
-            if include_history:return info
-            parts=PurePosixPath(info.name).parts
-            roots=(('profile','store','gemini_antigravity'),('profile','home','.gemini','antigravity'))
-            for root in roots:
-                if parts[:len(root)]==root and len(parts)>len(root):
-                    name=parts[len(root)]
-                    if name in ('conversations','brain') or name.startswith('conversation_summaries.db'):return None
-            return info
-        with tarfile.open(output_path,'w:gz') as tar:
-            tar.add(folder/'store',arcname='profile/store',filter=exclude_history)
-            tar.add(folder/'profile.json',arcname='profile/profile.json')
-            if proxy is not None:
-                # A snapshot of only this profile's associated node, never the pool.
-                with tempfile.TemporaryDirectory() as tmp:
-                    node=Path(tmp)/'proxy.json'
-                    atomic_json(node,proxy)
-                    tar.add(node,arcname='profile/proxy.json')
-            home=folder/'home' if profile.get('kind')!='existing' else None
-            if home is not None and home.is_dir():
-                def filter_member(info):
-                    parts=PurePosixPath(info.name).parts
-                    if any(n in IGNORE or n.startswith('Singleton') or 'Cache' in n or n in ('.tmp','.cache','engine.log') for n in parts):return None
-                    return exclude_history(info) if info.isfile() or info.isdir() else None
-                tar.add(home,arcname='profile/home',filter=filter_member)
-            if include_history and self.history.root.exists():
-                tar.add(self.history.root/'conversations',arcname='profile/shared-history/conversations')
-                tar.add(self.history.root/'brain',arcname='profile/shared-history/brain')
-                db=self.history.root/'conversation_summaries.db'
-                if db.is_file():
-                    with tempfile.TemporaryDirectory() as tmp:
-                        snapshot=Path(tmp)/db.name
-                        self.history.backup_database(snapshot)
-                        tar.add(snapshot,arcname='profile/shared-history/conversation_summaries.db')
+        with tempfile.TemporaryDirectory() as temporary:
+            folder=Path(temporary);store=folder/'store';store.mkdir()
+            value=archive_bytes(self,p_id)
+            if value is not None:(store/TOKEN).write_bytes(value);os.chmod(store/TOKEN,0o600)
+            atomic_json(folder/'profile.json',metadata)
+            with tarfile.open(output_path,'w:gz') as archive:
+                archive.add(store,arcname='profile/store')
+                archive.add(folder/'profile.json',arcname='profile/profile.json')
+                if proxy is not None:
+                    atomic_json(folder/'proxy.json',proxy);archive.add(folder/'proxy.json',arcname='profile/proxy.json')
+                if include_history:
+                    for name in ('conversations','brain'):
+                        archive.add(self.history.root/name,arcname='profile/shared-history/'+name)
+                    snapshot=folder/'conversation_summaries.db'
+                    if self.history.backup_database(snapshot):archive.add(snapshot,arcname='profile/shared-history/'+snapshot.name)
         return output_path
+
     @staticmethod
     def checked_import_members(tar):
         total=count=0
@@ -445,7 +341,7 @@ class ProfileManager:
             parts=PurePosixPath(member.name).parts
             if (not parts or member.name.startswith('/') or '..' in parts or '\\' in member.name
                 or ':' in member.name or not (member.isfile() or member.isdir())
-                or count>20000 or total>256*1024*1024):
+                or count>100000 or total>1024*1024*1024):
                 raise ValueError('压缩包包含非法路径、链接或超过大小限制')
             yield member,parts
 
@@ -481,9 +377,13 @@ class ProfileManager:
     def inspect_import(self,tar_path):
         # Preview validates the full archive but only reads small metadata files.
         # Materializing every application file twice is expensive on small VPS disks.
-        metadata={};proxy_files={};store_roots=set();store_names={}
+        metadata={};proxy_files={};store_roots=set();store_names={};history_files=0;history_bytes=0
         with tarfile.open(tar_path,'r:gz') as tar:
             for member,parts in self.checked_import_members(tar):
+                prefixes=((parts[0],'shared-history'),(parts[0],'store','gemini_antigravity'),(parts[0],'home','.gemini','antigravity'))
+                if member.isfile() and any(parts[:len(prefix)]==prefix and len(parts)>len(prefix) and
+                    (parts[len(prefix)] in ('conversations','brain') or parts[len(prefix)]=='conversation_summaries.db') for prefix in prefixes):
+                    history_files+=1;history_bytes+=member.size
                 if len(parts)>=2 and parts[1]=='store':
                     store_roots.add(parts[0])
                     if len(parts)>=3:store_names.setdefault(parts[0],set()).add(parts[2])
@@ -500,33 +400,48 @@ class ProfileManager:
         if proxy is not None:
             from proxy_manager import ProxyManager
             ProxyManager.validate_fields(**{key:proxy.get(key,'') for key in ('name','protocol','host','port','username','password')},allow_legacy=True)
-        return dict(name=str(meta.get('name','导入配置')),has_proxy=proxy is not None,
+        return dict(name=str(meta.get('name','导入配置')),has_proxy=proxy is not None,has_history=bool(history_files),history_files=history_files,history_bytes=history_bytes,history_message='包含聊天文件' if history_files else '无聊天文件',
                     proxy={key:ProxyManager.normalize_protocol(proxy.get(key)) if key=='protocol' else proxy.get(key) for key in ('name','protocol','host','port')} if proxy is not None else None,
                     proxy_message='包含对应代理' if proxy is not None else '无代理文件')
 
-    def import_profile(self,tar_path,proxy_manager=None,include_proxy=False):
-        with tempfile.TemporaryDirectory(dir=self.profiles_dir,prefix='.import-') as tmp:
-            source,meta,proxy=self._extract_import(tar_path,tmp)
+    def import_profile(self,tar_path,proxy_manager=None,include_proxy=False,include_history=False,history_mode='merge'):
+        from account_storage import TOKEN,read_bytes,write_bytes
+        if not isinstance(include_history,bool):raise ValueError('是否导入聊天记录必须为布尔值')
+        if history_mode not in ('merge','replace'):raise ValueError('聊天导入方式无效')
+        with tempfile.TemporaryDirectory(dir=self.profiles_dir,prefix='.import-') as temporary:
+            source,meta,proxy=self._extract_import(tar_path,temporary)
+            roots=[source/'store/gemini_antigravity',source/'home/.gemini/antigravity',source/'shared-history']
+            has_history=any(self.has_history(root) for root in roots)
+            if include_history and not has_history:raise ValueError('无聊天文件，不能导入聊天记录')
             original_profiles=copy.deepcopy(self.profiles)
             original_nodes=copy.deepcopy(proxy_manager.proxies) if proxy_manager is not None else None
-            p=None
+            profile=None;transfer=None
             try:
+                if include_history:transfer=self.history.prepare_import(roots,history_mode)
                 proxy_id=''
                 if include_proxy and proxy is not None:
                     if proxy_manager is None:raise ValueError('代理管理器不可用')
                     proxy_id=proxy_manager.import_proxy(proxy)['id']
-                p=self.create_profile(str(meta.get('name','导入配置'))+' (副本)',proxy_id,str(meta.get('email','')))
-                dest=self.profile_dir(p['id'])/'store'; remove_path(dest)
-                shutil.move(str(source/'store'),str(dest))
-                if (source/'home').is_dir(): shutil.move(str(source/'home'),str(self.profile_dir(p['id'])/'home'))
-                if (source/'shared-history').is_dir():self.history.merge_native(source/'shared-history')
-                return p
+                profile=self.create_profile(str(meta.get('name','导入配置'))+' (副本)',proxy_id,str(meta.get('email','')))
+                credential=read_bytes(source/'store'/TOKEN)
+                if credential is None:credential=read_bytes(source/'home/.gemini'/TOKEN)
+                if credential is not None:write_bytes(self.profile_dir(profile['id'])/'store'/TOKEN,credential)
+                if transfer:transfer.apply();transfer.commit()
+                return profile
             except Exception:
-                if p is not None:remove_path(self.profiles_dir/p['id'])
+                if profile is not None:remove_path(self.profiles_dir/profile['id'])
                 self.profiles=original_profiles;self._save()
                 if proxy_manager is not None:
                     proxy_manager.proxies=original_nodes;proxy_manager._save()
                 raise
+            finally:
+                if transfer:transfer.close()
+
+    @staticmethod
+    def has_history(root):
+        root=Path(root)
+        return (root/'conversation_summaries.db').is_file() or any(p.is_file() for n in ('conversations','brain') for p in (root/n).rglob('*'))
+
     def resolve_file(self,p_id,rel):
         root=(self.profile_dir(p_id)/'store').resolve()
         parts=PurePosixPath(rel).parts

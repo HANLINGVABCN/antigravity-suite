@@ -19,6 +19,7 @@ from process_tracking import ExistingProcess,stop_process,process_ports
 from process_supervisor import ProcessSupervisor
 from profile_manager import ProfileManager
 from server import create_app
+from config import atomic_json
 from test_suite import config,FakeSupervisor,start,login
 
 
@@ -76,12 +77,14 @@ def test_existing_restore_never_overwrites_token_with_old_snapshot(tmp_path):
     p=manager.register_existing(dict(home=str(home),config_dir=str(native),uid=os.getuid() if hasattr(os,'getuid') else 0,
         binary='/opt/antigravity/antigravity',display=':1',session_env={},available=True))
     old=manager.profile_dir(p['id'])/'store/jetski-standalone-oauth-token';old.write_text('old-snapshot')
-    actual=home/'.gemini/jetski-standalone-oauth-token';actual.parent.mkdir(exist_ok=True);actual.write_text('real-login')
+    actual=home/'.gemini/jetski-standalone-oauth-token';actual.parent.mkdir(exist_ok=True)
+    atomic_json(actual,dict(token=dict(refresh_token='real-login')))
+    original=actual.read_bytes()
     manager.restore_profile(p['id'])
-    assert actual.read_text()=='real-login' and manager.home==home
+    assert actual.read_bytes()==original and manager.home==home
     assert manager.runtime_targets[1][0]==native
     manager.save_active_to_profile(p['id'])
-    assert old.read_text()=='real-login' and actual.read_text()=='real-login'
+    assert old.read_bytes()==original and actual.read_bytes()==original
 
 
 @pytest.mark.skipif(os.name=='nt',reason='Linux /proc process tracking')

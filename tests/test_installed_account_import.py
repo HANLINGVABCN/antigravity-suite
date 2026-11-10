@@ -37,7 +37,8 @@ def test_initial_existing_login_is_captured_as_an_ordinary_account_without_touch
     assert p['id']==imported[0] and p['id']!=manager.native_runtime.installations[0]['id']
     store=manager.profile_dir(p['id'])/'store'
     assert json.loads((store/'jetski-standalone-oauth-token').read_text())==token
-    assert json.loads((store/'Antigravity_config/User/settings.json').read_text())==dict(theme='original')
+    assert not (store/'Antigravity_config').exists()
+    assert json.loads(config_file.read_text())==dict(theme='original')
     assert (home/'.gemini/jetski-standalone-oauth-token').read_bytes()==original_token
     assert manager.home_for(p['id'])==home
 
@@ -86,7 +87,7 @@ def test_unique_legacy_logged_account_becomes_ordinary_with_the_same_id(tmp_path
     assert manager.native_runtime.spec_for(identifier)['native_home']==str(home)
 
 
-def test_import_snapshot_includes_committed_desktop_sqlite_wal_state(tmp_path):
+def test_login_capture_does_not_snapshot_or_touch_desktop_settings_database(tmp_path):
     manager,home,_=setup(tmp_path);login(home)
     path=home/'.config/Antigravity/User/globalStorage/state.vscdb';path.parent.mkdir(parents=True)
     live=sqlite3.connect(path)
@@ -95,8 +96,8 @@ def test_import_snapshot_includes_committed_desktop_sqlite_wal_state(tmp_path):
         live.execute("INSERT INTO settings VALUES ('committed-in-WAL')");live.commit()
         imported=manager.import_installed_accounts_once()
         snapshot=manager.profile_dir(imported[0])/'store/Antigravity_config/User/globalStorage/state.vscdb'
-        with sqlite3.connect(snapshot) as saved:
-            assert saved.execute('SELECT name FROM settings').fetchone()==('committed-in-WAL',)
+        assert not snapshot.exists()
+        assert live.execute('SELECT name FROM settings').fetchone()==('committed-in-WAL',)
     finally:live.close()
 
 

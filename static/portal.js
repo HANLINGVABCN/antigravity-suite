@@ -749,36 +749,50 @@ let currentStatus = null;
                 pendingProfileImport = preview;
                 document.getElementById("external-import-json").value = "";
                 PortalUI.close("modal-external-import");
-                if (!preview.has_proxy) {
+                if (!preview.has_proxy && !preview.has_history) {
                     SuiteTransfer.stage(source === 'suite' ? "无代理文件，正在保存配置" : "正在转换并保存账号，代理由你自己配置");
                     await finishProfileImport(false);
                     return;
                 }
                 document.getElementById("import-profile-name").textContent = preview.name;
                 document.getElementById("import-profile-warnings").textContent = (preview.warnings || []).join('\n');
-                document.getElementById("import-include-proxy").checked = true;
-                document.getElementById("import-proxy-detail").textContent = (preview.proxy_count > 1 ? '有 ' + preview.proxy_count + ' 个账号附带代理，选择后逐一绑定。示例：' : '') + preview.proxy.name + " · " + preview.proxy.protocol + "://" + preview.proxy.host + ":" + preview.proxy.port;
+                document.getElementById("import-include-proxy").checked = false;
+                document.getElementById("import-proxy-option").hidden = !preview.has_proxy;
+                document.getElementById("import-history-option").hidden = !preview.has_history;
+                document.getElementById("import-include-history").checked = false;
+                document.querySelector('input[name="history-mode"][value="merge"]').checked=true;
+                document.getElementById("import-history-detail").textContent=preview.has_history?'包含 '+preview.history_files+' 个聊天文件；默认不导入。':'无聊天文件';
+                updateImportHistoryChoice();
+                document.getElementById("import-proxy-detail").textContent = (preview.proxy_count > 1 ? '有 ' + preview.proxy_count + ' 个账号附带代理，选择后逐一绑定。示例：' : '') + (preview.has_proxy ? preview.proxy.name + " · " + preview.proxy.protocol + "://" + preview.proxy.host + ":" + preview.proxy.port : '无代理文件');
                 PortalUI.open("modal-import-profile");
-                showTransferStatus("配置包包含对应代理，请选择是否导入",{phase:'waiting',persistent:true});
+                showTransferStatus("请选择是否导入附带代理和聊天记录",{phase:'waiting',persistent:true});
             } catch (error) { SuiteTransfer.fail(error); }
             finally {importingProfile=false;}
         }
-        async function finishProfileImport(includeProxy) {
+        function updateImportHistoryChoice(){
+            const include=!!pendingProfileImport?.has_history&&document.getElementById('import-include-history').checked;
+            document.getElementById('import-history-mode').hidden=!include;
+            document.getElementById('import-history-warning').hidden=!include||document.querySelector('input[name="history-mode"]:checked').value!=='replace';
+        }
+        async function finishProfileImport(includeProxy,includeHistory=false,historyMode='merge',confirmReplace=false) {
             if (!pendingProfileImport) return;
-            SuiteTransfer.stage('正在保存配置和合并聊天记录');
+            SuiteTransfer.stage(includeHistory?'正在保存配置并'+(historyMode==='replace'?'覆盖':'合并')+'聊天记录':'正在保存账号配置，聊天记录不变');
             const result = await (await fetch("/__suite/api/profiles/import/confirm", {method:"POST",headers:{"Content-Type":"application/json"},
-                body:JSON.stringify({import_token:pendingProfileImport.import_token,include_proxy:includeProxy})})).json();
+                body:JSON.stringify({import_token:pendingProfileImport.import_token,include_proxy:includeProxy,include_history:includeHistory,history_mode:historyMode,confirm_replace:confirmReplace})})).json();
             pendingProfileImport = null;
             closeModals(); await fetchStatus();
             const count = result.imported_count || 1;
-            showTransferStatus(result.proxy_message + "。已导入 " + count + " 个配置" + (result.warnings ? '，已安排自动检测；详细结果见各配置卡片。' : ''));
+            showTransferStatus(result.proxy_message + "。" + (result.history_message||'') + "。已导入 " + count + " 个配置" + (result.warnings ? '，已安排自动检测；详细结果见各配置卡片。' : ''));
         }
         async function confirmProfileImport() {
             if(importingProfile)return;
+            const includeHistory=!!pendingProfileImport?.has_history&&document.getElementById('import-include-history').checked;
+            const mode=document.querySelector('input[name="history-mode"]:checked').value;
+            if(includeHistory&&mode==='replace'&&!confirm('覆盖会替换本机所有账号共用的全部聊天记录，旧记录不会因切换配置而恢复。确定覆盖导入吗？'))return;
             importingProfile=true;
             const button = document.getElementById("import-profile-button");
             button.disabled = true; button.textContent = "导入中…";
-            try { await finishProfileImport(document.getElementById("import-include-proxy").checked); }
+            try { await finishProfileImport(document.getElementById("import-include-proxy").checked,includeHistory,mode,includeHistory&&mode==='replace'); }
             catch (error) { SuiteTransfer.fail(error); }
             finally {importingProfile=false; button.disabled = false; button.textContent = "导入"; }
         }

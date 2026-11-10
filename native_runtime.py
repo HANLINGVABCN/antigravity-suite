@@ -2,8 +2,6 @@
 import json
 import hashlib
 import os
-import shutil
-import tempfile
 import time
 from pathlib import Path
 
@@ -51,8 +49,9 @@ class NativeRuntime:
         if not isinstance(spec.get('native_uid'),int) or isinstance(spec.get('native_uid'),bool) or spec['native_uid']<0:
             raise ValueError('共用配置所属用户无效')
         if spec.get('runtime_kind')=='internal-login':
-            home=(data/'login-environment/home').resolve()
-            if not home.is_relative_to(data) or Path(spec['native_home']).resolve()!=home or Path(spec['native_config_dir']).resolve()!=home/'.config/Antigravity':raise ValueError('内部登录运行目录无效')
+            home=Path(spec['native_home']).resolve()
+            allowed={(data/'login-environment/home').resolve(),self.manager.legacy_home.resolve()}
+            if home not in allowed or Path(spec['native_config_dir']).resolve()!=home/'.config/Antigravity':raise ValueError('内部登录运行目录无效')
             return
         for name in ('native_home','native_config_dir'):
             path=Path(spec[name]).resolve()
@@ -134,6 +133,7 @@ class NativeRuntime:
         return dict(native=native,token=token,state='logged_in' if token else 'logged_out')
 
     def associate(self, profile_id, native):
+        self.selected=dict(native)
         self.binding=dict(profile_id=profile_id,native=dict(native))
         atomic_json(self.file,self.binding)
 
@@ -154,89 +154,31 @@ class NativeRuntime:
             atomic_json(self.ignore_file,self._ignored_login)
 
     def activate(self, profile_id):
-        from profile_manager import safe_copytree,remove_path
+        from account_storage import archive_bytes,working_file,read_bytes,write_bytes
         profile=self.manager.get_profile(profile_id)
-        spec=profile if profile and profile.get('kind')=='existing' else self.selected
-        if not spec:
-            return False
+        spec=profile if profile and profile.get('kind')=='existing' else self.selected or (self.binding or {}).get('native')
+        if not spec:return False
         self.validate(spec)
-        if not spec.get('available'):
-            raise ValueError('原共用配置当前不可用，请检查本体和目录权限')
+        if not spec.get('available'):raise ValueError('原运行环境不可用，请检查本体和目录权限')
         if self.binding and self.binding['profile_id']==profile_id and self.binding['native']['id']==spec['id']:
-            self.manager.cli_credentials.ensure(spec,prefer_native=True)
-            return True
+            self.manager.cli_credentials.ensure(spec,prefer_native=True);return True
         self.manager.cli_credentials.stop(spec)
         self.manager.cli_credentials.ensure(spec,prefer_native=True)
-        home=Path(spec['native_home']);config=Path(spec['native_config_dir'])
-        self.manager.history.merge_native(home/'.gemini/antigravity')
-        dest=targets(home,config)
-        backup=self.manager.data_dir/'native-runtime-backups'/str(time.time_ns())
-        backup.mkdir(parents=True,mode=0o700)
-        atomic_json(backup/'binding.json',self.binding or {})
-        for name,path in dest.items():
-            if path.is_symlink():
-                raise ValueError('原共用配置路径不能是符号链接')
-            if path.is_dir():safe_copytree(path,backup/name)
-            elif path.is_file():shutil.copy2(path,backup/name)
-        if profile.get('kind')!='existing':
-            private=self.manager.profile_dir(profile_id)/'home'
-            source=targets(private) if (private/'.suite-home-initialized').is_file() else {
-                name:self.manager.profile_dir(profile_id)/'store'/name for name in NAMES}
-            changed=[]
-            try:
-                for name,path in dest.items():
-                    path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
-                    if hasattr(os,'chown') and path.parent in (home/'.gemini',home/'.config'):
-                        import pwd
-                        os.chown(path.parent,spec['native_uid'],pwd.getpwuid(spec['native_uid']).pw_gid)
-                    changed.append((name,path))
-                    remove_path(path)
-                    src=source[name]
-                    if src.is_symlink():raise ValueError('账号原配置不能是符号链接')
-                    if src.is_dir():safe_copytree(src,path)
-                    elif src.is_file():shutil.copy2(src,path)
-                    if path.exists():own_tree(path,spec['native_uid'])
-                self.manager.history.sync_native(home/'.gemini/antigravity',spec['native_uid'])
-            except Exception:
-                for name,path in reversed(changed):
-                    remove_path(path)
-                    if (backup/name).is_dir():safe_copytree(backup/name,path)
-                    elif (backup/name).is_file():shutil.copy2(backup/name,path)
-                    if path.exists():own_tree(path,spec['native_uid'])
-                raise
-        self.binding=dict(profile_id=profile_id,native=dict(spec),backup=str(backup))
-        atomic_json(self.file,self.binding)
+        target=working_file(spec['native_home']);previous=read_bytes(target)
+        old_binding=self.binding
+        try:
+            if profile.get('kind')!='existing':write_bytes(target,archive_bytes(self.manager,profile_id),spec['native_uid'])
+            self.associate(profile_id,spec)
+        except Exception:
+            write_bytes(target,previous,spec['native_uid']);self.binding=old_binding
+            if old_binding:atomic_json(self.file,old_binding)
+            else:self.file.unlink(missing_ok=True)
+            raise
         return True
 
     def snapshot_to_private(self, profile_id):
-        from profile_manager import safe_copytree,remove_path
-        from shared_history import HISTORY_ENTRIES
-        spec=self.spec_for(profile_id)
-        profile=self.manager.get_profile(profile_id)
-        if not spec or profile.get('kind')=='existing':
-            return
-        home=self.manager.profile_dir(profile_id)/'home'
-        home.mkdir(parents=True,exist_ok=True,mode=0o700)
-        for name,dest in targets(home).items():
-            src=targets(spec['native_home'],spec['native_config_dir'])[name]
-            dest.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
-            if name=='gemini_antigravity':
-                # Preserve one shared history library. Copying it back into every
-                # profile HOME turns each save into another full migration backup.
-                self.manager.history.merge_native(src)
-                self.manager.history.merge_native(dest)
-                with tempfile.TemporaryDirectory(dir=dest.parent,prefix='.history-metadata-') as temporary:
-                    staged=Path(temporary)/'antigravity'
-                    if src.is_dir():safe_copytree(src,staged,exclude=HISTORY_ENTRIES)
-                    else:staged.mkdir(mode=0o700)
-                    remove_path(dest)
-                    os.replace(staged,dest)
-                continue
-            remove_path(dest)
-            if src.is_dir():safe_copytree(src,dest)
-            elif src.is_file():shutil.copy2(src,dest)
-        (home/'.suite-home-initialized').write_text('1',encoding='ascii')
-        self.manager.history.attach(home)
+        # Legacy entry point: archives only the current credential, never a HOME.
+        return self.manager.save_active_to_profile(profile_id)
 
     def status(self):
         if not self.binding:

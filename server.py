@@ -119,6 +119,43 @@ class SuiteState:
         if self.lock.locked():return
         async with self.lock:await self.observe_runtime()
 
+    async def initialize_account_layout(self):
+        spec=self.session_ops.runtime(create=True)
+        if not self.profiles.native_runtime.selected:self.profiles.native_runtime.selected=spec
+        marker=self.data/'account-layout-v2.json'
+        pending_recovery=any((p/'journal.json').is_file() for p in self.profiles.history.root.parent.glob('.history-transfer-*'))
+        if marker.is_file() and not pending_recovery:
+            self.profiles.history.use_native(Path(spec['native_home'])/'.gemini/antigravity');return
+        async with self.lock:
+            running=bool(self.supervisor.process and self.supervisor.process.poll() is None)
+            self.busy=True;self.supervisor.is_restarting=True
+            try:
+                await asyncio.to_thread(self.profiles.cli_credentials.stop,spec)
+                await asyncio.to_thread(self.supervisor.stop_antigravity)
+                await asyncio.to_thread(self.profiles.migrate_account_layout_once,spec)
+                if running and self.profiles.get_profile(self.active):
+                    self.bind_engine_home(self.active)
+                    await self.prepare_engine_proxy(self.profiles.get_profile(self.active))
+                    await asyncio.to_thread(self.supervisor.start_antigravity,self.engine_proxy_url)
+            finally:self.busy=False;self.supervisor.is_restarting=False
+
+    async def import_account(self,path,include_proxy=False,include_history=False,history_mode='merge'):
+        await self.ensure_switch_allowed()
+        if self.sessions.in_progress():raise ValueError('请先完成或取消当前登录，再导入')
+        was_running=bool(self.supervisor.process and self.supervisor.process.poll() is None)
+        if include_history:
+            spec=self.session_ops.runtime()
+            if spec:await asyncio.to_thread(self.profiles.cli_credentials.stop,spec)
+            await self.stop_and_save()
+            self.busy=True;self.supervisor.is_restarting=True
+        try:
+            return await asyncio.to_thread(self.profiles.import_profile,path,self.proxies,include_proxy,include_history,history_mode)
+        finally:
+            if include_history:
+                try:
+                    if was_running:await asyncio.to_thread(self.supervisor.start_antigravity,self.engine_proxy_url)
+                finally:self.busy=False;self.supervisor.is_restarting=False
+
     async def sync_native_login(self, force=False):
         if not self.discovery_enabled or self.updater.busy():return
         observed=self.profiles.native_runtime.observe_login(force,self.sessions.state.get('working'))
@@ -299,13 +336,6 @@ class SuiteState:
                 await asyncio.to_thread(self.supervisor.stop_antigravity)
                 if old_profile and old_loaded==old: await asyncio.to_thread(self.profiles.save_active_to_profile,old)
                 self.bind_engine_home(target)
-                # Reuse a desktop-launched matching instance, rather than contend on its lock.
-                if p.get('kind')=='existing' and not p.get('proxy_id') and await asyncio.to_thread(self.supervisor.adopt_existing):
-                    has_shared_files=any(any(folder.iterdir()) for folder in (self.profiles.history.root/'conversations',self.profiles.history.root/'brain'))
-                    if not has_shared_files:
-                        self.active=target;self.loaded=target;self.last_error='';self.persist();return
-                    # A stopped merge makes other profiles' history visible in the native app.
-                    await asyncio.to_thread(self.supervisor.stop_antigravity)
                 # Stop any exact-matching orphan before changing runtime or proxy parameters.
                 await asyncio.to_thread(self.supervisor.stop_antigravity)
                 if not self.profiles.native_runtime.selected:
@@ -319,6 +349,7 @@ class SuiteState:
                         original.configure_native(native)
                         await asyncio.to_thread(original.stop_antigravity)
                     await asyncio.to_thread(self.profiles.native_runtime.activate,target)
+                    switched=True
                 await asyncio.to_thread(self.profiles.restore_profile,target)
                 self.bind_engine_home(target)
                 switched=True
@@ -392,7 +423,7 @@ class SuiteState:
                     default_profile_id=self.cfg.get('default_profile_id'),antigravity_ready=bool(port),
                     antigravity_port=port,active_port=port,busy=self.busy,last_error=self.last_error,
                     starting_profile_id=self.starting_profile_id,diagnostics=self.diagnostics,
-                    privacy=dict(enabled=True,browser_external_connections='blocked',client_ip_headers='removed',profile_homes='separate'),
+                    privacy=dict(enabled=True,browser_external_connections='blocked',client_ip_headers='removed',profile_homes='shared'),
                     history=self.profiles.history.summary(),
                     common_runtime=self.profiles.native_runtime.status(),suite_version=(SUITE_DIR/'VERSION').read_text().strip(),
                     native_session=dict(state='logged_out' if self.cfg.get('native_logged_out') else 'logged_in' if p else 'unknown'),
@@ -581,9 +612,6 @@ async def api(request):
             if not isinstance(content,str) or len(content.encode())>1024*1024: raise ValueError('文件不能超过 1MB')
             if file.suffix=='.json' or file.name=='jetski-standalone-oauth-token': json.loads(content)
             file.parent.mkdir(parents=True,exist_ok=True)
-            if file.exists():
-                backup=s.data/'file-backups'/('%d-%s'%(time.time_ns(),p_id)); backup.mkdir(parents=True,mode=0o700)
-                (backup/file.name).write_bytes(file.read_bytes())
             fd,name=tempfile.mkstemp(dir=file.parent,prefix='.edit-')
             try:
                 with os.fdopen(fd,'w',encoding='utf-8') as out: out.write(content); out.flush(); os.fsync(out.fileno())
@@ -592,9 +620,10 @@ async def api(request):
                 if os.path.exists(name): os.unlink(name)
             # Persistent HOME is authoritative once initialized. Apply the edit there too.
             home=s.profiles.home_for(p_id)
-            if runtime_file is not None and (home/'.suite-home-initialized').exists():
-                runtime_file.parent.mkdir(parents=True,exist_ok=True)
-                runtime_file.write_text(content,encoding='utf-8');os.chmod(runtime_file,0o600)
+            if runtime_file is not None:
+                from account_storage import write_bytes
+                spec=s.session_ops.runtime()
+                write_bytes(runtime_file,content.encode(),spec.get('native_uid') if spec else None)
         return ok()
     if path=='profiles/import/preview' and method=='POST':
         source=request.query.get('source','suite')
@@ -606,19 +635,24 @@ async def api(request):
             fd,name=tempfile.mkstemp(dir=temporary,prefix='profile-',suffix='.tar.gz');os.close(fd)
             file=Path(name)
             try:
-                await save_profile_upload(request,file,max_bytes=4*1024*1024 if source!='suite' else 64*1024*1024)
+                await save_profile_upload(request,file,max_bytes=4*1024*1024 if source!='suite' else 512*1024*1024)
                 if source=='suite':info=await asyncio.to_thread(s.profiles.inspect_import,file)
                 else:
                     from external_import import preview_external
                     info=await asyncio.to_thread(preview_external,file,source)
                 token=secrets.token_urlsafe(32)
-                s.pending_imports[token]=dict(path=str(file),source=source,session=request.cookies.get('ag_session'),expires_at=time.time()+600,has_proxy=info['has_proxy'])
+                s.pending_imports[token]=dict(path=str(file),source=source,session=request.cookies.get('ag_session'),expires_at=time.time()+600,has_proxy=info['has_proxy'],has_history=info.get('has_history',False))
             except Exception:
                 file.unlink(missing_ok=True);raise
         return ok(import_token=token,**info)
     if path=='profiles/import/confirm' and method=='POST':
         include_proxy=d.get('include_proxy',False)
         if not isinstance(include_proxy,bool):raise ValueError('是否导入对应代理必须是布尔值')
+        include_history=d.get('include_history',False);history_mode=d.get('history_mode','merge')
+        if not isinstance(include_history,bool):raise ValueError('是否导入聊天文件必须是布尔值')
+        if history_mode not in ('merge','replace'):raise ValueError('聊天导入方式必须为合并或覆盖')
+        if include_history and history_mode=='replace' and d.get('confirm_replace') is not True:
+            raise ValueError('覆盖会替换本机全部聊天记录，请先明确确认')
         async with s.lock:
             s.prune_imports()
             token=d.get('import_token');item=s.pending_imports.get(token)
@@ -626,9 +660,11 @@ async def api(request):
             source=item.get('source','suite')
             imported={}
             if source=='suite':
-                p=await asyncio.to_thread(s.profiles.import_profile,Path(item['path']),s.proxies,include_proxy and item['has_proxy'])
+                if include_history and not item['has_history']:raise ValueError('无聊天文件')
+                p=await s.import_account(Path(item['path']),include_proxy and item['has_proxy'],include_history,history_mode)
                 imported=dict(profiles=[p],imported_count=1,proxy_imported=bool(include_proxy and item['has_proxy']))
             else:
+                if include_history:raise ValueError('第三方账号文件不包含聊天记录')
                 from external_import import import_external
                 imported=await asyncio.to_thread(import_external,Path(item['path']),source,s.profiles)
                 p=imported.pop('profile')
@@ -636,7 +672,8 @@ async def api(request):
         if source!='suite':
             for profile in imported['profiles']:s.request_detection(profile['id'])
         message='代理由你自己配置' if source!='suite' else '对应代理已导入' if imported['proxy_imported'] else '未导入对应代理' if item['has_proxy'] else '无代理文件'
-        return ok(profile=p,has_proxy=item['has_proxy'],source=source,proxy_message=message,**imported)
+        history_message='聊天记录已合并导入' if include_history and history_mode=='merge' else '本机聊天记录已替换为导入文件' if include_history else '未导入聊天记录' if item['has_history'] else '无聊天文件'
+        return ok(profile=p,has_proxy=item['has_proxy'],source=source,proxy_message=message,history_message=history_message,history_imported=include_history,**imported)
     if path=='profiles/import/cancel' and method=='POST':
         async with s.lock:
             token=d.get('import_token');item=s.pending_imports.get(token)
@@ -648,7 +685,9 @@ async def api(request):
         with tempfile.TemporaryDirectory() as tmp:
             file=Path(tmp)/'profile.tar.gz'
             await save_profile_upload(request,file)
-            async with s.lock:p=await asyncio.to_thread(s.profiles.import_profile,file,s.proxies,request.query.get('include_proxy')=='1')
+            include_history=request.query.get('include_history')=='1';mode=request.query.get('history_mode','merge')
+            if include_history and mode=='replace' and request.query.get('confirm_replace')!='1':raise ValueError('请明确确认覆盖本机聊天记录')
+            async with s.lock:p=await s.import_account(file,request.query.get('include_proxy')=='1',include_history,mode)
         return ok(profile=p)
     if path=='profiles/export' and method=='GET':
         p_id=request.query.get('id'); s.profiles.profile_dir(p_id)
@@ -657,26 +696,22 @@ async def api(request):
         async with s.lock:
             await s.ensure_switch_allowed()
             include_proxy=format=='suite' and request.query.get('include_proxy')=='1'
-            option=request.query.get('include_history','1')
+            option=request.query.get('include_history','0')
             if option not in ('0','1'):raise ValueError('是否导出聊天记录必须为 0 或 1')
             include_history=format=='suite' and option=='1'
             profile=s.profiles.get_profile(p_id)
             node=s.proxies.get_proxy(profile.get('proxy_id')) if include_proxy and profile.get('proxy_id') else None
             if include_proxy and not node:raise ValueError('此配置没有可导出的对应代理')
-            restart=p_id==s.active and bool(s.supervisor.active_port)
-            if p_id==s.active: await s.stop_and_save()
-            try:
-                if format!='suite':
-                    from external_import import export_external
-                    exported=await asyncio.to_thread(export_external,s.profiles,p_id,format)
-                    data=json.dumps(exported,ensure_ascii=False,indent=2).encode('utf-8')
-                else:
-                    with tempfile.TemporaryDirectory() as tmp:
-                        file=Path(tmp)/'profile.tar.gz'
-                        await asyncio.to_thread(s.profiles.export_profile,p_id,file,node,include_history)
-                        data=await asyncio.to_thread(file.read_bytes)
-            finally:
-                if restart: await asyncio.to_thread(s.supervisor.start_antigravity,s.engine_proxy_url)
+            if p_id==s.active and not s.sessions.in_progress():await asyncio.to_thread(s.profiles.save_active_to_profile,p_id)
+            if format!='suite':
+                from external_import import export_external
+                exported=await asyncio.to_thread(export_external,s.profiles,p_id,format)
+                data=json.dumps(exported,ensure_ascii=False,indent=2).encode('utf-8')
+            else:
+                with tempfile.TemporaryDirectory() as tmp:
+                    file=Path(tmp)/'profile.tar.gz'
+                    await asyncio.to_thread(s.profiles.export_profile,p_id,file,node,include_history)
+                    data=await asyncio.to_thread(file.read_bytes)
         suffix='tar.gz' if format=='suite' else 'json'
         content_type='application/gzip' if format=='suite' else 'application/json'
         return web.Response(body=data,content_type=content_type,headers={'Content-Disposition':'attachment; filename="%s_%s.%s"'%(format,p_id,suffix),'Cache-Control':'no-store'})
@@ -811,7 +846,7 @@ async def api(request):
         return await google_api(request,s,path,d)
     raise web.HTTPNotFound()
 
-async def save_profile_upload(request,file,max_bytes=64*1024*1024):
+async def save_profile_upload(request,file,max_bytes=512*1024*1024):
     if request.content_type!='multipart/form-data':raise ValueError('请上传配置压缩包')
     reader=await request.multipart();field=await reader.next()
     if not field or field.name!='file':raise ValueError('请上传 file 字段')
@@ -906,6 +941,7 @@ async def resources(app):
     if s.discovery_enabled:
         await s.refresh_existing(import_logins=True)
         if not s.updater.busy():await s.session_ops.protect_existing()
+        if not s.updater.busy():await s.initialize_account_layout()
         if not s.updater.busy() and s.profiles.get_profile(s.active):
             await s.prepare_engine_proxy(s.profiles.get_profile(s.active))
         elif not s.updater.busy() and s.session_ops.runtime():
@@ -966,7 +1002,7 @@ async def shutting_down(app):
 
 def create_app(cfg=None,profile_mgr=None,supervisor=None):
     cfg=cfg or load_config()
-    app=web.Application(middlewares=[privacy_guard,guard],client_max_size=64*1024*1024)
+    app=web.Application(middlewares=[privacy_guard,guard],client_max_size=512*1024*1024)
     app['state']=SuiteState(cfg,profile_mgr,supervisor)
     app.router.add_route('*','/__suite/api/{tail:.*}',api)
     app.router.add_route('*','/{path:.*}',page)

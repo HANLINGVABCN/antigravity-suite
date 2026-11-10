@@ -32,21 +32,22 @@ def test_export_choices_exclude_history_in_stores_and_homes_and_keep_proxy_indep
         assert meta['export_options']==dict(include_history=history,include_proxy=proxy)
         assert ('profile/proxy.json' in names)==proxy
         assert 'profile/store/jetski-standalone-oauth-token' in names
-        assert 'profile/home/workspace/source.py' in names
+        assert 'profile/home/workspace/source.py' not in names
+        assert sum(name.endswith('/chat.pb') for name in names)==int(history)
         chats=[n for n in names if 'conversations/' in n or 'brain/' in n or 'conversation_summaries.db' in n]
         assert bool(chats)==history
         assert ('profile/shared-history/conversations/chat.pb' in names)==history
     assert (m.history.root/'conversations/chat.pb').is_file()
 
 
-def test_export_api_honors_history_choice_and_legacy_request_still_includes_history(tmp_path):
+def test_export_api_honors_history_choice_and_omitted_history_choice_excludes_history(tmp_path):
     async def scenario():
         app=create_app(config(tmp_path),supervisor=FakeSupervisor());m=app['state'].profiles;p=populate(m)
         runner,port=await start(app);base='http://127.0.0.1:'+str(port)
         try:
             async with aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True)) as client:
                 await login(client,base)
-                for option,expected in [('0',False),('1',True),(None,True)]:
+                for option,expected in [('0',False),('1',True),(None,False)]:
                     params=dict(id=p['id'])
                     if option is not None:params['include_history']=option
                     response=await client.get(base+'/__suite/api/profiles/export',params=params)

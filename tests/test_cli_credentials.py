@@ -61,8 +61,7 @@ def test_existing_cli_refresh_is_preserved_and_original_files_are_backed_up(shar
     atomic_json(alias, token(access='fresh-cli', expiry='2026-11-08T20:00:00+08:00'))
     assert manager.cli_credentials.ensure(spec)
     assert json.loads(native.read_text())['token']['access_token'] == 'fresh-cli'
-    backups = list((manager.data_dir / 'cli-credential-backups').rglob('*oauth-token'))
-    assert len(backups) == 2 and all(p.stat().st_mode & 0o777 == 0o600 for p in backups)
+    assert not (manager.data_dir / 'cli-credential-backups').exists()
 
 
 def test_other_cli_account_is_not_silently_overwritten_but_explicit_switch_unifies_it(shared):
@@ -75,8 +74,10 @@ def test_other_cli_account_is_not_silently_overwritten_but_explicit_switch_unifi
     assert json.loads(alias.read_text())['token']['refresh_token'] == 'another-login'
     manager.cli_credentials.ensure(spec, prefer_native=True)
     assert alias.is_symlink() and json.loads(alias.read_text())['token']['refresh_token'] == 'saved-A'
-    backup = next((manager.data_dir / 'cli-credential-backups').rglob('antigravity-oauth-token'))
-    assert json.loads(backup.read_text())['token']['refresh_token'] == 'another-login'
+    archived = next(p for p in manager.list_profiles() if p['name'].startswith('CLI 登录-'))
+    credential = manager.profile_dir(archived['id'])/'store/jetski-standalone-oauth-token'
+    assert json.loads(credential.read_text())['token']['refresh_token'] == 'another-login'
+    assert not (manager.data_dir / 'cli-credential-backups').exists()
 
 
 def test_cli_only_login_can_be_imported_and_empty_shared_link_does_not_restore_login(shared):

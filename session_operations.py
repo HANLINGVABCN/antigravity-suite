@@ -4,7 +4,6 @@ import copy
 import hashlib
 import json
 import os
-import shutil
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,7 +24,7 @@ class SessionOperations:
             native.validate(spec)
             return dict(spec)
         if not create:return None
-        home=s.data/'login-environment/home';home.mkdir(parents=True,exist_ok=True,mode=0o700)
+        home=s.profiles.legacy_home;home.mkdir(parents=True,exist_ok=True,mode=0o700)
         return dict(id=hashlib.sha256(str(home.resolve()).encode()).hexdigest()[:32],runtime_kind='internal-login',
             native_home=str(home.resolve()),native_config_dir=str(home.resolve()/'.config/Antigravity'),
             native_uid=os.geteuid() if hasattr(os,'geteuid') else 0,native_binary=s.cfg['antigravity_bin'],
@@ -101,8 +100,7 @@ class SessionOperations:
             if not s.supervisor.installed():raise ValueError('反重力本体尚未安装')
             s.busy=True;s.supervisor.is_restarting=True
             s.exit_state.update(phase='saving',message='正在停止运行并保存当前登录存档')
-            backup=s.data/'session-exit-backups'/str(time.time_ns());backup.mkdir(parents=True,mode=0o700)
-            moved=[]
+            previous_token=None
             try:
                 await asyncio.to_thread(s.supervisor.stop_antigravity)
                 await s.sync_native_login(force=True)
@@ -118,9 +116,8 @@ class SessionOperations:
                 if not token.resolve().is_relative_to(Path(spec['native_home']).resolve()):raise ValueError('当前登录路径指向运行目录以外')
                 if token.exists():
                     if token.is_symlink():raise ValueError('当前登录文件不能是符号链接')
-                    target=backup/'jetski-standalone-oauth-token';shutil.copy2(token,target)
-                    token.unlink();moved.append((token,target))
-                atomic_json(backup/'context.json',dict(profile_id=old_id,runtime=spec))
+                    previous_token=token.read_bytes()
+                    token.unlink()
                 s.active=None;s.loaded=None;s.profiles.native_runtime.detach();s.profiles.native_runtime.clear_ignored_login()
                 s.sessions.exited(spec);s.cfg['native_logged_out']=True;s.cfg['login_environment']=True
                 if not was_running and old_profile:s.native_runtime_proxy_id=old_profile.get('proxy_id') or None
@@ -135,8 +132,9 @@ class SessionOperations:
                 s.exit_state.update(phase='ready',message='当前配置已退出，存档保留。可以重新登录。')
             except Exception:
                 await asyncio.to_thread(s.supervisor.stop_antigravity)
-                for target,saved in moved:
-                    target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(saved,target);own_tree(target,spec['native_uid'])
+                if previous_token is not None:
+                    from account_storage import write_bytes
+                    write_bytes(token,previous_token,spec['native_uid'])
                 s.login_environment_open=was_open
                 s.sessions.state=old_sessions;s.sessions.save()
                 s.profiles.native_runtime.binding=old_binding

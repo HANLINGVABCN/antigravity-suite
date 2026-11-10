@@ -158,7 +158,7 @@ def test_exit_from_stopped_profile_preserves_its_proxy_for_login_environment(tmp
 def test_exit_preserves_saved_session_and_chats_and_rolls_back_unconfirmed_clear(tmp_path,monkeypatch,probe):
     async def scenario():
         state,a,home=setup(tmp_path);a['proxy_id']='';state.native_runtime_proxy_id=None
-        manager=state.profiles;chat=home/'.gemini/antigravity/conversations/chat.pb';chat.parent.mkdir(parents=True);chat.write_bytes(b'keep chats')
+        manager=state.profiles;chat=home/'.gemini/antigravity/conversations/chat.pb';chat.parent.mkdir(parents=True,exist_ok=True);chat.write_bytes(b'keep chats')
         token=home/'.gemini/jetski-standalone-oauth-token';old=token.read_bytes()
         async def mock_probe(*args,**kwargs):return dict(token_present=probe)
         monkeypatch.setattr('auth_probe.auth_status',mock_probe)

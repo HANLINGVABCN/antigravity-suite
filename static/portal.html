@@ -326,9 +326,16 @@
         <div class="modal-title">导入配置文件</div>
         <p id="import-profile-name" style="margin-bottom:12px;"></p>
         <p id="import-profile-warnings" style="font-size:12px;color:#fbbf24;white-space:pre-line;margin-bottom:12px;"></p>
-        <label style="font-size:14px;"><input type="checkbox" id="import-include-proxy"> 导入对应代理</label>
+        <label id="import-proxy-option" style="font-size:14px;"><input type="checkbox" id="import-include-proxy"> 导入对应代理</label>
         <p id="import-proxy-detail" style="font-size:12px;color:var(--text-sub);margin-top:8px;"></p>
         <p style="font-size:12px;color:var(--text-sub);margin-top:12px;">勾选后导入节点并自动绑定。不会覆盖已有的不同节点；不勾选则只导入配置。</p>
+        <label id="import-history-option" style="font-size:14px;display:block;margin-top:18px;"><input type="checkbox" id="import-include-history" onchange="updateImportHistoryChoice()"> 导入附带聊天记录</label>
+        <p id="import-history-detail" style="font-size:12px;color:var(--text-sub);margin-top:8px;"></p>
+        <div id="import-history-mode" hidden style="margin-top:12px;">
+            <label style="display:block;"><input type="radio" name="history-mode" value="merge" checked onchange="updateImportHistoryChoice()"> 合并导入（保留本机聊天，加入导入记录）</label>
+            <label style="display:block;margin-top:10px;"><input type="radio" name="history-mode" value="replace" onchange="updateImportHistoryChoice()"> 覆盖导入（替换本机全部聊天记录）</label>
+            <p id="import-history-warning" hidden style="color:#f87171;margin-top:10px;">覆盖影响所有配置共用的聊天库，旧记录将被替换，无法用切换账号恢复。</p>
+        </div>
         <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:20px;">
             <button class="btn btn-secondary" onclick="cancelProfileImport()">取消</button>
             <button class="btn btn-primary" id="import-profile-button" onclick="confirmProfileImport()">导入</button>

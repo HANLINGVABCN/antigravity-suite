@@ -135,7 +135,7 @@ def test_external_export_uses_current_home_and_missing_or_business_token_is_reje
     with pytest.raises(ValueError,match='凭据'):export_external(profiles,profile['id'],'cpa')
     value,_=native_token(cpa_record(),'home@example.com')
     atomic_json(profiles.profile_dir(profile['id'])/'store/jetski-standalone-oauth-token',value)
-    home=profiles.home_for(profile['id']);home.mkdir(parents=True);(home/'.suite-home-initialized').write_text('1')
+    home=profiles.home_for(profile['id']);profiles.bind_home(profile['id']);home.mkdir(parents=True,exist_ok=True);(home/'.suite-home-initialized').write_text('1')
     fresh=copy.deepcopy(value);fresh['token']['refresh_token']='fresh-home';atomic_json(home/'.gemini/jetski-standalone-oauth-token',fresh)
     assert export_external(profiles,profile['id'],'cpa')['refresh_token']=='fresh-home'
     fresh['auth_method']='enterprise';atomic_json(home/'.gemini/jetski-standalone-oauth-token',fresh)

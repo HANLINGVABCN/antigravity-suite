@@ -59,7 +59,7 @@ def test_external_redirect_is_blocked_before_browser_receives_it(tmp_path):
 
 
 @pytest.mark.skipif(os.name=='nt',reason='Linux deployment uses filesystem symlinks; run on target server')
-def test_each_account_has_separate_home_cache_tmp_and_workspace(tmp_path):
+def test_accounts_share_fixed_working_home_and_keep_their_credentials_separate(tmp_path):
     m=ProfileManager(tmp_path,tmp_path/'profiles')
     a=m.create_profile('A');b=m.create_profile('B')
     m.restore_profile(a['id']);home_a=m.home
@@ -67,12 +67,13 @@ def test_each_account_has_separate_home_cache_tmp_and_workspace(tmp_path):
         p=home_a/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text('account-A')
     m.save_active_to_profile(a['id'])
     m.restore_profile(b['id']);home_b=m.home
-    assert home_a!=home_b and not (home_b/'workspace/private').exists()
+    assert home_a==home_b and (home_b/'workspace/private').read_text()=='account-A'
     m.restore_profile(a['id'])
     assert m.home==home_a and (m.home/'workspace/private').read_text()=='account-A'
     file=tmp_path/'a.tar.gz';m.export_profile(a['id'],file)
     clone=m.import_profile(file)
-    assert (m.home_for(clone['id'])/'workspace/private').read_text()=='account-A'
+    assert not (m.profile_dir(clone['id'])/'home').exists()
+    assert (home_a/'workspace/private').read_text()=='account-A'
 
 @pytest.mark.skipif(os.name=='nt',reason='Linux deployment uses filesystem symlinks; run on target server')
 def test_conversation_logs_survive_switch_export_import_and_stale_snapshot(tmp_path):
@@ -87,7 +88,7 @@ def test_conversation_logs_survive_switch_export_import_and_stale_snapshot(tmp_p
     m.restore_profile(b['id']);m.restore_profile(a['id'])
     assert transcript.read_text()=='new conversation after snapshot'
     assert (m.home/'.gemini/antigravity/brain/session/.system_generated/logs/transcript.jsonl').read_text()=='new conversation after snapshot'
-    archive=tmp_path/'history.tar.gz';m.export_profile(a['id'],archive)
+    archive=tmp_path/'history.tar.gz';m.export_profile(a['id'],archive,include_history=True)
     clone=m.import_profile(archive);m.restore_profile(clone['id'])
     copy=m.home/'.gemini/antigravity/brain/session/.system_generated/logs/transcript.jsonl'
     assert copy.read_text()=='new conversation after snapshot'

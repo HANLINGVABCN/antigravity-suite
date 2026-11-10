@@ -200,7 +200,7 @@ def test_profile_switch_clears_missing_token_and_stale_files(tmp_path):
     manager.restore_profile(a['id'])
     manager.runtime_targets[0][0].unlink()
     manager.save_active_to_profile(a['id'])
-    assert not (a_store/'jetski-standalone-oauth-token').exists()
+    assert (a_store/'jetski-standalone-oauth-token').read_text()=='secret-A'
 
 @pytest.mark.skipif(os.name=='nt',reason='Linux deployment uses filesystem symlinks; run on target server')
 def test_failed_switch_restores_previous_account(tmp_path):
@@ -235,7 +235,7 @@ def test_import_export_and_archive_traversal(tmp_path):
         with pytest.raises(ValueError): m.import_profile(bad)
     with pytest.raises(ValueError): m.resolve_file(p['id'],'../../outside')
 
-def test_import_api_and_file_backup(tmp_path):
+def test_import_and_explicit_file_edit_keep_identity_without_extra_backups(tmp_path):
     async def scenario():
         app=create_app(config(tmp_path),supervisor=FakeSupervisor()); s=app['state']
         p=s.profiles.create_profile('Account'); file=s.profiles.profile_dir(p['id'])/'store/Antigravity_config/settings.json'
@@ -251,7 +251,7 @@ def test_import_api_and_file_backup(tmp_path):
                 response=await c.post(url+'/__suite/api/profiles/file',json={'id':p['id'],'path':'Antigravity_config/settings.json','content':'{"after":2}'})
                 assert response.status==200
                 assert json.loads(file.read_text())=={'after':2}
-                assert len(list((tmp_path/'file-backups').rglob('settings.json')))==1
+                assert not (tmp_path/'file-backups').exists()
                 response=await c.post(url+'/__suite/api/profiles/file',json={'id':p['id'],'path':'Antigravity_config/settings.json','content':'bad-json'})
                 assert response.status==400
         finally: await runner.cleanup()

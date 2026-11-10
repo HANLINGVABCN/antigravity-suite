@@ -625,3 +625,47 @@ def test_floating_dock_touch_drag_does_not_open_and_invalid_saved_position_is_sa
     finally:session.detach()
     pw.expect(dock).to_have_attribute('data-side','left')
     assert not page.locator('#ag-drawer').evaluate('e=>e.classList.contains("active")')
+
+
+def test_history_only_import_offers_merge_or_replace_and_requires_confirmation(portal):
+    page=portal['page'];state=portal['state'];profile=portal['profile']
+    root=state.profiles.history.root
+    (root/'conversations/incoming.pb').write_bytes(b'incoming chat')
+    archive=portal['archive'].with_name('with-chat.tar.gz')
+    state.profiles.export_profile(profile['id'],archive,include_history=True)
+    page.get_by_role('button',name='📥 导入',exact=True).click()
+    with page.expect_file_chooser() as chooser:
+        page.get_by_role('button',name='从本工具导入',exact=True).click()
+    chooser.value.set_files(archive)
+    pw.expect(page.locator('#modal-import-profile')).to_be_visible()
+    pw.expect(page.locator('#import-include-proxy')).to_be_hidden()
+    pw.expect(page.locator('#import-proxy-detail')).to_have_text('无代理文件')
+    include=page.locator('#import-include-history');pw.expect(include).not_to_be_checked()
+    pw.expect(page.locator('#import-history-mode')).to_be_hidden()
+    include.check();pw.expect(page.locator('#import-history-mode')).to_be_visible()
+    page.locator('input[name="history-mode"][value="replace"]').check()
+    pw.expect(page.locator('#import-history-warning')).to_be_visible()
+    sent=[]
+    def confirm_route(route):
+        sent.append(route.request.post_data_json)
+        route.fulfill(status=200,content_type='application/json',body=json.dumps(dict(ok=True,proxy_message='无代理文件',history_message='已覆盖聊天',profile=profile)))
+    page.route('**/__suite/api/profiles/import/confirm',confirm_route)
+    page.once('dialog',lambda dialog:dialog.dismiss())
+    page.locator('#import-profile-button').click()
+    assert not sent;pw.expect(page.locator('#modal-import-profile')).to_be_visible()
+    page.once('dialog',lambda dialog:dialog.accept())
+    page.locator('#import-profile-button').click()
+    pw.expect(page.locator('#modal-import-profile')).to_be_hidden()
+    assert len(sent)==1 and sent[0]['include_history'] and sent[0]['history_mode']=='replace' and sent[0]['confirm_replace']
+
+
+def test_no_chat_attachment_says_no_chat_and_does_not_offer_history_modes(portal):
+    page=portal['page']
+    page.get_by_role('button',name='📥 导入',exact=True).click()
+    with page.expect_file_chooser() as chooser:
+        page.get_by_role('button',name='从本工具导入',exact=True).click()
+    chooser.value.set_files(portal['archive'])
+    pw.expect(page.locator('#modal-import-profile')).to_be_visible()
+    pw.expect(page.locator('#import-history-detail')).to_have_text('无聊天文件')
+    pw.expect(page.locator('#import-include-history')).to_be_hidden()
+    pw.expect(page.locator('#import-history-mode')).to_be_hidden()

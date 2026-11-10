@@ -40,7 +40,7 @@ def test_desktop_and_web_share_selected_login_but_account_archives_and_ids_are_k
     # Simulates a refresh/login performed by the actual desktop app.
     atomic_json(native_token,dict(token=dict(refresh_token='desktop-refreshed-A'),id_token_email='A@example.invalid'))
     manager.save_active_to_profile(a['id'])
-    assert json.loads((manager.profile_dir(a['id'])/'home/.gemini/jetski-standalone-oauth-token').read_text())['token']['refresh_token']=='desktop-refreshed-A'
+    assert json.loads((manager.profile_dir(a['id'])/'store/jetski-standalone-oauth-token').read_text())['token']['refresh_token']=='desktop-refreshed-A'
     manager.native_runtime.activate(b['id']);manager.restore_profile(b['id'])
     assert json.loads(native_token.read_text())['token']['refresh_token']=='dummy-B'
     manager.save_active_to_profile(b['id'])
@@ -48,8 +48,8 @@ def test_desktop_and_web_share_selected_login_but_account_archives_and_ids_are_k
     assert json.loads(native_token.read_text())['token']['refresh_token']=='desktop-refreshed-A'
     assert len(manager.list_profiles())==3 and a['proxy_id']==b['proxy_id']=='fixed-node-binding'
     assert (home/'.config/OtherApplication/untouched').read_text()=='keep'
-    backup=Path(manager.native_runtime.binding['backup'])
-    assert backup.is_dir()
+    assert not (manager.data_dir/'native-runtime-backups').exists()
+    assert not (manager.profile_dir(a['id'])/'home').exists()
 
 
 def test_restart_uses_native_updated_config_and_never_restores_an_old_snapshot(tmp_path,monkeypatch):
@@ -71,7 +71,7 @@ def test_switch_failure_restores_original_native_credentials(tmp_path,monkeypatc
     atomic_json(token,dict(token=dict(refresh_token='original')))
     a=account(manager,'A')
     def fail(*args,**kwargs):raise OSError('intentional filesystem failure')
-    monkeypatch.setattr(manager.history,'sync_native',fail)
+    monkeypatch.setattr(manager.native_runtime,'associate',fail)
     with pytest.raises(OSError):manager.native_runtime.activate(a['id'])
     assert json.loads(token.read_text())['token']['refresh_token']=='original'
     assert manager.native_runtime.binding is None
