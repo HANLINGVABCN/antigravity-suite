@@ -1,8 +1,9 @@
 import asyncio
+import json
 import re
 from http.cookies import SimpleCookie
 
-from aiohttp import ClientError, WSMsgType, web
+from aiohttp import ClientError, ClientTimeout, WSMsgType, web
 from multidict import CIMultiDict
 from yarl import URL
 from privacy import CLIENT_IP_HEADERS, inject_privacy, privacy_headers
@@ -11,6 +12,53 @@ from client_assets import ClientAssets,script_response
 
 HOP = {'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
        'te', 'trailer', 'transfer-encoding', 'upgrade'}
+
+
+EMPTY_CSRF_RE = re.compile(br'("csrfToken"\s*:\s*)""')
+
+
+async def mint_session_csrf(state, target, ssl_option):
+    getter = getattr(state.supervisor, 'csrf_token', None)
+    admin_csrf = await asyncio.to_thread(getter) if callable(getter) else None
+    if not admin_csrf:
+        return None
+    timeout = ClientTimeout(total=5, sock_connect=3)
+    try:
+        async with state.http.post(
+            target + '/auth/mint',
+            data=b'{}',
+            headers={'Content-Type': 'application/json', 'x-codeium-csrf-token': admin_csrf},
+            ssl=ssl_option,
+            timeout=timeout,
+            auto_decompress=True,
+        ) as mint_resp:
+            if mint_resp.status == 200:
+                mint_payload = await mint_resp.json()
+                bootstrap_token = mint_payload.get('bootstrapToken') if isinstance(mint_payload, dict) else None
+                if isinstance(bootstrap_token, str) and bootstrap_token:
+                    async with state.http.post(
+                        target + '/auth',
+                        json={'bootstrapToken': bootstrap_token},
+                        headers={'Origin': target},
+                        ssl=ssl_option,
+                        timeout=timeout,
+                        auto_decompress=True,
+                    ) as auth_resp:
+                        if auth_resp.status == 200:
+                            auth_payload = await auth_resp.json()
+                            session_token = auth_payload.get('sessionToken') if isinstance(auth_payload, dict) else None
+                            if isinstance(session_token, str) and session_token:
+                                return session_token
+    except (ClientError, OSError, asyncio.TimeoutError, ValueError):
+        pass
+    return admin_csrf
+
+
+def inject_csrf_token(data, token):
+    if not token or not EMPTY_CSRF_RE.search(data):
+        return data
+    encoded = json.dumps(token).encode('utf-8')
+    return EMPTY_CSRF_RE.sub(lambda m: m.group(1) + encoded, data, count=1)
 
 
 def clean_headers(headers):
@@ -96,6 +144,10 @@ async def proxy(request):
                     chunks.extend(chunk)
                     if len(chunks) > 16 * 1024 * 1024: raise ValueError('IDE 首页超过大小限制')
                 data = bytes(chunks)
+                if EMPTY_CSRF_RE.search(data):
+                    session_csrf = await mint_session_csrf(state, target, ssl_option)
+                    if session_csrf:
+                        data = inject_csrf_token(data, session_csrf)
                 version=(state.static.parent/'VERSION').read_text(encoding='utf-8').strip()
                 # Old cached client bundles may have only the request-level fallback guard.
                 # Version the native entry script so a refresh loads the full action guard.

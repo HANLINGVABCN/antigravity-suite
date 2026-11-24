@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.10.1 — 2026-11-24
+
+- 适配 Antigravity v2.34.0+ 的 AuthBootstrap 本地鉴权机制：当引擎首页返回空 `"csrfToken":""` 时，从本机 `language_server` 进程环境读取 `ANTIGRAVITY_SERVER_CSRF_TOKEN`，并通过 `/auth/mint` 与 `/auth` 换取会话令牌注入受鉴权的网页入口，修复远程 Web IDE 因 `401 missing CSRF token` 持续卡在加载界面的问题。
+- 账号状态探测（`auth_probe.py`）同步支持空 `csrfToken` 页面回退至进程环境令牌；对旧版在首页直接内嵌非空 `csrfToken` 的引擎保持完全兼容。
+
 ## 0.10.0 — 2026-11-10
 
 - 账号存档只读写固定目录内的登录凭据，切换只载入官方客户端固定工作文件并调整代理，不移动配置卡目录或 ID，不再复制软件配置、聊天库及整份 HOME。

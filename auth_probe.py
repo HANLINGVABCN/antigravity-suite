@@ -35,8 +35,11 @@ async def auth_status(state, force=False, progress=None):
                 if response.status!=200:raise ValueError('HTTP')
                 page=await response.text()
             match=re.search(r'"csrfToken"\s*:\s*"([^"]+)"',page)
-            if not match:raise ValueError('CSRF')
-            headers={'Content-Type':'application/json','Connect-Protocol-Version':'1','Origin':target,'x-codeium-csrf-token':match.group(1)}
+            csrf=match.group(1) if match else None
+            if not csrf and callable(getattr(state.supervisor,'csrf_token',None)):
+                csrf=await asyncio.to_thread(state.supervisor.csrf_token)
+            if not csrf:raise ValueError('CSRF')
+            headers={'Content-Type':'application/json','Connect-Protocol-Version':'1','Origin':target,'x-codeium-csrf-token':csrf}
             async def rpc(method):
                 nonlocal http_status
                 report(method)

@@ -111,3 +111,24 @@ def process_ports(pid):
             if len(parts)>9 and parts[3]=='0A' and parts[9] in inodes:
                 ports.add(int(parts[1].split(':')[-1],16))
     return ports
+
+
+def process_csrf_token(pid):
+    """Read the language server's CSRF token from its process environment or argv."""
+    candidates = descendants(pid)
+    root_proc = process_info(pid)
+    if root_proc:
+        candidates.append(root_proc)
+    candidates.sort(key=lambda item: 'language_server' not in Path(item['executable']).name)
+    for info in candidates:
+        env = process_environment(info, ('ANTIGRAVITY_SERVER_CSRF_TOKEN',))
+        token = env.get('ANTIGRAVITY_SERVER_CSRF_TOKEN')
+        if token:
+            return token
+        args = info.get('args') or []
+        for idx, arg in enumerate(args):
+            if arg.startswith('--csrf_token=') and arg.split('=', 1)[1]:
+                return arg.split('=', 1)[1]
+            if arg == '--csrf_token' and idx + 1 < len(args) and args[idx + 1]:
+                return args[idx + 1]
+    return None

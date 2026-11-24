@@ -10,7 +10,7 @@ import tempfile
 import hashlib
 from pathlib import Path
 from discovery import engine_processes,config_dir_for
-from process_tracking import ExistingProcess,stop_process,process_ports
+from process_tracking import ExistingProcess,stop_process,process_ports,process_csrf_token
 
 class ProcessSupervisor:
     def __init__(self,antigravity_bin='/opt/Antigravity/antigravity',display=':99',log_path=None,runtime_home=None):
@@ -76,6 +76,9 @@ class ProcessSupervisor:
                                     stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
         time.sleep(.6)
         if self._xvfb.poll() is not None: raise RuntimeError('虚拟显示器启动失败，请检查 Xvfb 和 DISPLAY')
+    def csrf_token(self):
+        if not self.process or self.process.poll() is not None: return None
+        return process_csrf_token(self.process.pid)
     def detect_port_from_log(self):
         if not self.process or self.process.poll() is not None or not self.log_path.exists(): return None
         with self.log_path.open('rb') as f:
