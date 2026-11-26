@@ -24,7 +24,7 @@
         if (anchor && !own(anchor.href)) { event.preventDefault(); event.stopImmediatePropagation(); notice(); }
     }, true);
     // WebRTC can bypass HTTP proxy settings and reveal network addresses.
-    for (const key of ['RTCPeerConnection', 'webkitRTCPeerConnection']) {
+    for (const key of ['RTCPeerConnection', 'webkitRTCPeerConnection', 'mozRTCPeerConnection']) {
         try { Object.defineProperty(window, key, {value: undefined, configurable: false}); } catch {}
     }
     try {
@@ -74,6 +74,17 @@
         caches.keys = async () => (await originalKeys()).filter(k => k.startsWith(prefix)).map(k => k.slice(prefix.length));
         const originalMatch = caches.match.bind(caches);
         caches.match = (request,options={}) => originalMatch(request,{...options,cacheName:prefix + (options.cacheName || 'default')});
+    }
+    if (typeof window.BroadcastChannel === 'function') {
+        try {
+            const NativeBC = window.BroadcastChannel;
+            const ScopedBC = function(name) {
+                return new NativeBC(prefix + String(name));
+            };
+            ScopedBC.prototype = NativeBC.prototype;
+            Object.setPrototypeOf(ScopedBC, NativeBC);
+            Object.defineProperty(window, 'BroadcastChannel', {value: ScopedBC, configurable: true, writable: true});
+        } catch {}
     }
     window.__SUITE_PRIVACY__ = {enabled:true,profile};
 })();

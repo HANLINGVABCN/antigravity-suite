@@ -13,6 +13,19 @@ def blocks_logout(url):
     return bool(re.fullmatch(r'/exa\.language_server_pb\.LanguageServerService/AuthLogout',path,re.I))
 
 
+_WS_LOGOUT_RE = re.compile(rb'exa\.language_server_pb\.LanguageServerService/AuthLogout', re.I)
+
+
+def blocks_ws_logout(payload):
+    if isinstance(payload, str):
+        data = payload.encode('utf-8', 'ignore')
+    elif isinstance(payload, (bytes, bytearray, memoryview)):
+        data = bytes(payload)
+    else:
+        return False
+    return bool(_WS_LOGOUT_RE.search(data))
+
+
 def method_end(source,start):
     opening=source.index('{',start);depth=0;quote=None;escape=False;i=opening
     while i<len(source):

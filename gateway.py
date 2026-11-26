@@ -7,8 +7,8 @@ from http.cookies import SimpleCookie
 from aiohttp import ClientError, ClientTimeout, WSMsgType, web
 from multidict import CIMultiDict
 from yarl import URL
-from privacy import CLIENT_IP_HEADERS, inject_privacy, privacy_headers
-from logout_protection import blocks_logout,WARNING
+from privacy import CLIENT_IP_HEADERS, inject_privacy, is_telemetry_path, normalize_upstream_headers, privacy_headers
+from logout_protection import blocks_logout, blocks_ws_logout, WARNING
 from client_assets import ClientAssets,script_response
 
 HOP = {'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
@@ -84,6 +84,7 @@ def clean_headers(headers):
 async def proxy(request, _retried=False):
     state = request.app['state']
     if blocks_logout(request.raw_path):return web.json_response(dict(ok=False,blocked_logout=True,error=WARNING),status=403)
+    if is_telemetry_path(request.raw_path):return web.json_response({})
     port = state.supervisor.active_port
     if state.busy or not port:
         if request.path == '/' and request.method == 'GET':
@@ -93,8 +94,7 @@ async def proxy(request, _retried=False):
     target = '%s://127.0.0.1:%d' % (scheme, port)
     url = URL(target + request.raw_path, encoded=True)
     headers = clean_headers(request.headers)
-    for key in list(headers):
-        if key.lower() in CLIENT_IP_HEADERS: headers.popall(key, None)
+    normalize_upstream_headers(headers)
     headers['Host'] = '127.0.0.1:%d' % port
     for k in ['Origin', 'Referer', 'X-Forwarded-Host']:
         if k in headers: headers[k] = target + ('/' if k == 'Referer' else '')
@@ -234,14 +234,23 @@ async def websocket(request, url, headers, ssl_option):
     client = web.WebSocketResponse(protocols=[remote.protocol] if remote.protocol else [],
                                    autoping=False, max_msg_size=0)
     await client.prepare(request)
-    async def relay(source, dest):
+    check_ws_logout = url.path == '/connect-websocket'
+    async def relay(source, dest, inspect_logout=False):
         async for msg in source:
-            if msg.type == WSMsgType.TEXT: await dest.send_str(msg.data)
-            elif msg.type == WSMsgType.BINARY: await dest.send_bytes(msg.data)
+            if msg.type == WSMsgType.TEXT:
+                if inspect_logout and blocks_ws_logout(msg.data):
+                    logging.warning('已通过 WebSocket 拦截原生退出登录请求')
+                    continue
+                await dest.send_str(msg.data)
+            elif msg.type == WSMsgType.BINARY:
+                if inspect_logout and blocks_ws_logout(msg.data):
+                    logging.warning('已通过 WebSocket 拦截原生退出登录请求')
+                    continue
+                await dest.send_bytes(msg.data)
             elif msg.type == WSMsgType.PING: await dest.ping(msg.data)
             elif msg.type == WSMsgType.PONG: await dest.pong(msg.data)
             else: break
-    tasks = [asyncio.create_task(relay(client, remote)), asyncio.create_task(relay(remote, client))]
+    tasks = [asyncio.create_task(relay(client, remote, inspect_logout=check_ws_logout)), asyncio.create_task(relay(remote, client))]
     try:
         await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     finally:
