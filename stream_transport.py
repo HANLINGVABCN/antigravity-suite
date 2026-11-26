@@ -1,5 +1,6 @@
 """Tunnel only known read-only native subscriptions over authenticated WebSockets."""
 import asyncio
+import logging
 import base64
 from urllib.parse import urlsplit
 import aiohttp
@@ -18,7 +19,7 @@ async def subscription(request):
     connections=getattr(state,'native_stream_sockets',None)
     if connections is None:connections=state.native_stream_sockets=set()
     connections.add(ws)
-    upstream_task=closed=changed=None
+    upstream_task=closed=changed=None;method='unknown'
     try:
         message=await asyncio.wait_for(ws.receive_json(),10)
         if not isinstance(message,dict) or message.get('method')!='POST':raise ValueError('Invalid subscription')
@@ -54,7 +55,8 @@ async def subscription(request):
         upstream_task=asyncio.create_task(forward());closed=asyncio.create_task(ws.receive());changed=asyncio.create_task(wait_runtime_change())
         done,_=await asyncio.wait([upstream_task,closed,changed],return_when=asyncio.FIRST_COMPLETED)
         if upstream_task in done:await upstream_task
-    except (aiohttp.ClientError,OSError,ValueError,TypeError,asyncio.TimeoutError):
+    except (aiohttp.ClientError,OSError,ValueError,TypeError,asyncio.TimeoutError) as error:
+        logging.warning('原生订阅 %s 中断: %s: %s', method, type(error).__name__, error)
         if not ws.closed:await ws.send_json(dict(error='可能是原生订阅连接中断，请返回面板检查运行状态'))
     finally:
         for task in (upstream_task,closed,changed):

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import json
 import re
 from http.cookies import SimpleCookie
@@ -61,12 +62,25 @@ def inject_csrf_token(data, token):
     return EMPTY_CSRF_RE.sub(lambda m: m.group(1) + encoded, data, count=1)
 
 
+async def _refresh_upstream_port(state, failed_port):
+    refresh = getattr(state.supervisor, 'refresh_runtime', None)
+    if callable(refresh):
+        try:
+            await asyncio.to_thread(refresh)
+        except Exception:
+            logging.debug('刷新上游运行端口失败', exc_info=True)
+    new_port = getattr(state.supervisor, 'active_port', None)
+    if new_port and new_port != failed_port:
+        return new_port
+    return None
+
+
 def clean_headers(headers):
     excluded = HOP | {h.strip().lower() for h in headers.get('Connection', '').split(',')}
     return CIMultiDict((k, v) for k, v in headers.items() if k.lower() not in excluded)
 
 
-async def proxy(request):
+async def proxy(request, _retried=False):
     state = request.app['state']
     if blocks_logout(request.raw_path):return web.json_response(dict(ok=False,blocked_logout=True,error=WARNING),status=403)
     port = state.supervisor.active_port
@@ -176,10 +190,14 @@ async def proxy(request):
                 await response.write(chunk)
             await response.write_eof()
             return response
-    except (ClientError, OSError, asyncio.TimeoutError):
+    except (ClientError, OSError, asyncio.TimeoutError, AttributeError) as error:
         if response is not None and response.prepared:
             if request.transport: request.transport.close()
             return response
+        logging.warning('代理请求 %s %s 到端口 %s 失败: %s: %s', request.method, request.path, port, type(error).__name__, error)
+        new_port = await _refresh_upstream_port(state, port)
+        if not _retried and new_port and request.method in ('GET', 'HEAD'):
+            return await proxy(request, _retried=True)
         return web.json_response({'ok': False, 'error': '无法连接核心引擎'}, status=502)
 
 
@@ -191,8 +209,23 @@ async def websocket(request, url, headers, ssl_option):
     try:
         remote = await state.http.ws_connect(url, headers=headers, protocols=protocols, ssl=ssl_option,
                                             autoping=False, max_msg_size=0)
-    except (ClientError, OSError):
-        return web.json_response({'ok': False, 'error': 'WebSocket 连接失败'}, status=502)
+    except (ClientError, OSError, asyncio.TimeoutError, AttributeError) as error:
+        logging.warning('WebSocket 连接 %s 失败: %s: %s', url.path, type(error).__name__, error)
+        new_port = await _refresh_upstream_port(state, url.port)
+        if new_port:
+            scheme = state.cfg.get('backend_scheme', 'https')
+            target = '%s://127.0.0.1:%d' % (scheme, new_port)
+            retry_url = URL(target + request.raw_path, encoded=True)
+            headers['Host'] = '127.0.0.1:%d' % new_port
+            for k in ['Origin', 'Referer', 'X-Forwarded-Host']:
+                if k in headers: headers[k] = target + ('/' if k == 'Referer' else '')
+            try:
+                remote = await state.http.ws_connect(retry_url, headers=headers, protocols=protocols, ssl=ssl_option,
+                                                    autoping=False, max_msg_size=0)
+            except (ClientError, OSError, asyncio.TimeoutError, AttributeError):
+                return web.json_response({'ok': False, 'error': 'WebSocket 连接失败'}, status=502)
+        else:
+            return web.json_response({'ok': False, 'error': 'WebSocket 连接失败'}, status=502)
     client = web.WebSocketResponse(protocols=[remote.protocol] if remote.protocol else [],
                                    autoping=False, max_msg_size=0)
     await client.prepare(request)

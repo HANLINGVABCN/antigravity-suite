@@ -933,7 +933,8 @@ async def page(request):
 
 async def resources(app):
     s=app['state']
-    s.http=aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None,sock_connect=10),
+    s.http=aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=256,limit_per_host=0,enable_cleanup_closed=True),
+                                 timeout=aiohttp.ClientTimeout(total=None,sock_connect=10),
                                  auto_decompress=False,cookie_jar=aiohttp.DummyCookieJar(),trust_env=False)
     s.stream_http=aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=64),timeout=aiohttp.ClientTimeout(total=None,sock_connect=10),
                                  auto_decompress=False,cookie_jar=aiohttp.DummyCookieJar(),trust_env=False)

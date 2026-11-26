@@ -45,4 +45,24 @@
    socket.onclose=()=>{if(!ended)failed(new Error('原生订阅连接已关闭'))};
   });
  };
+
+ const NativeWebSocket=window.WebSocket;
+ if(typeof NativeWebSocket==='function'){
+  const WrappedWebSocket=function(url,protocols){
+   const socket=protocols===undefined?new NativeWebSocket(url):new NativeWebSocket(url,protocols);
+   try{
+    const parsed=new URL(String(url),location.href);
+    const sameHost=parsed.host===location.host;
+    if(sameHost&&parsed.pathname==='/connect-websocket'){
+     let signaled=false;
+     socket.addEventListener('message',()=>{if(!signaled){signaled=true;signal('ConnectWebSocket',false);}},{once:true});
+    }
+   }catch{}
+   return socket;
+  };
+  WrappedWebSocket.prototype=NativeWebSocket.prototype;
+  Object.setPrototypeOf(WrappedWebSocket,NativeWebSocket);
+  for(const key of ['CONNECTING','OPEN','CLOSING','CLOSED'])WrappedWebSocket[key]=NativeWebSocket[key];
+  window.WebSocket=WrappedWebSocket;
+ }
 })();
