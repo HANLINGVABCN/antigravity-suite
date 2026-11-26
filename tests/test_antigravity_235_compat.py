@@ -110,3 +110,34 @@ def test_stream_transport_logs_warning_on_error(tmp_path, caplog):
             await br.cleanup()
 
     asyncio.run(scenario())
+
+
+def test_hung_upstream_page_redirects_to_portal(tmp_path, monkeypatch):
+    import gateway
+    monkeypatch.setattr(gateway, 'PAGE_UPSTREAM_TIMEOUT', aiohttp.ClientTimeout(total=0.5, sock_connect=0.3, sock_read=0.3))
+
+    async def scenario():
+        async def hang(request):
+            await asyncio.sleep(5)
+            return web.Response(text='too-late')
+
+        backend = web.Application()
+        backend.router.add_get('/', hang)
+        backend.router.add_get('/c/hung', hang)
+        br, bp = await start(backend)
+
+        app = create_app(config(tmp_path), supervisor=FakeSupervisor(bp))
+        app['state'].active = 'A'
+        runner, port = await start(app)
+        origin = 'http://127.0.0.1:' + str(port)
+        try:
+            async with aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True)) as client:
+                await login(client, origin)
+                async with client.get(origin + '/c/hung', headers={'Accept': 'text/html'}, allow_redirects=False) as resp:
+                    assert resp.status == 302
+                    assert resp.headers.get('Location') == '/?portal=1'
+        finally:
+            await runner.cleanup()
+            await br.cleanup()
+
+    asyncio.run(scenario())

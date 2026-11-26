@@ -16,6 +16,7 @@ HOP = {'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
 
 
 EMPTY_CSRF_RE = re.compile(br'("csrfToken"\s*:\s*)""')
+PAGE_UPSTREAM_TIMEOUT = ClientTimeout(total=12, sock_connect=5, sock_read=10)
 
 
 async def mint_session_csrf(state, target, ssl_option):
@@ -116,8 +117,10 @@ async def proxy(request, _retried=False):
     body = request.content.iter_chunked(65536) if request.can_read_body else None
     response = None
     try:
+        req_timeout = PAGE_UPSTREAM_TIMEOUT if inject else None
         async with state.http.request(request.method, url, headers=headers, data=body,
                                       ssl=ssl_option, allow_redirects=False,
+                                      timeout=req_timeout,
                                       auto_decompress=inject or client_script) as upstream:
             out = clean_headers(upstream.headers)
             out['X-Accel-Buffering']='no'
@@ -198,6 +201,8 @@ async def proxy(request, _retried=False):
         new_port = await _refresh_upstream_port(state, port)
         if not _retried and new_port and request.method in ('GET', 'HEAD'):
             return await proxy(request, _retried=True)
+        if inject:
+            raise web.HTTPFound('/?portal=1')
         return web.json_response({'ok': False, 'error': '无法连接核心引擎'}, status=502)
 
 
