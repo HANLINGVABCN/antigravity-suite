@@ -13,22 +13,28 @@
             <div class="logo-badge">🚀</div>
             <div>
                 <h1>Antigravity 控制管理大厅</h1>
-                <div style="font-size: 11px; color: var(--text-sub);">账号配置、代理节点与共享聊天记录</div>
+                <div class="logo-sub">账号配置、代理节点与共享聊天记录</div>
             </div>
         </div>
         <div class="header-actions">
             <button class="btn btn-secondary" id="btn-suite-update" onclick="openSuiteUpdate()">更新项目</button>
-            <button class="btn btn-primary" id="btn-core-manage" disabled onclick="openCoreInstallModal()">检测反重力…</button>
+            <button class="btn btn-secondary" id="btn-core-manage" disabled onclick="openCoreInstallModal()">检测反重力…</button>
             <button class="btn btn-secondary" onclick="openServiceSettings()">服务设置</button><button class="btn btn-secondary" id="btn-service-restart-header" onclick="restartManagementService(false)" disabled>重启后台服务</button><button class="btn btn-secondary" id="btn-engine-toggle" onclick="stopEngine()">启动反重力</button><button class="btn btn-secondary" onclick="logout()">退出后台</button><span id="service-restart-header-status" role="status" hidden style="font-size:12px;"></span>
         </div>
     </header>
-    <div class="overview-strip" aria-label="运行状态">
+    <div class="status-bar">
+        <div class="overview-strip" aria-label="运行状态">
             <div class="pill" id="pill-core-status">本体状态检测中...</div>
             <div class="pill" id="pill-system-status">内存检测中...</div>
             <div class="pill" id="pill-cur-ip">出口检测中...</div>
             <div class="pill" id="pill-suite-version">项目版本加载中…</div>
+        </div>
+        <div id="google-auth-notice" role="status"><span id="google-auth-text">等待检查 Google 登录状态</span><button class="btn btn-primary" id="btn-open-login" onclick="openNativeLogin()" hidden style="margin-left:auto;">打开登录界面</button></div>
+        <div class="status-footnotes">
+            <div class="history-tip">聊天记录由所有配置共享，切换账号不会隐藏其他账号的本地记录。</div>
+            <div id="logout-guard-status" role="status" class="history-tip"></div>
+        </div>
     </div>
-    <div class="history-tip">聊天记录由所有配置共享，切换账号不会隐藏其他账号的本地记录。</div><div id="google-auth-notice" role="status" style="margin:12px 24px;padding:12px;border:1px solid var(--border);border-radius:8px;font-size:13px"><span id="google-auth-text">等待检查 Google 登录状态</span><button class="btn btn-primary" id="btn-open-login" onclick="openNativeLogin()" hidden style="margin-left:12px;">打开登录界面</button></div><div id="logout-guard-status" role="status" class="history-tip"></div>
 
     <main>
         <!-- 左侧：Google 账号与配置档案 -->

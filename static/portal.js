@@ -49,7 +49,7 @@ let currentStatus = null;
             const stamp = result.checked_at ? new Date(result.checked_at * 1000).toLocaleString() : '';
             const label = result.status === 'normal' ? '检测正常' : result.status === 'checking' ? '检测中…' : '异常 · 请检查';
             const elapsed=result.status==='checking'&&result.started_at?'已用 '+Math.max(0,Math.floor(Date.now()/1000-result.started_at))+' 秒':stamp;
-            return `<div class="diag ${result.status}"><strong>${label}</strong><div>${escapeHtml(result.reason)}</div><small>${escapeHtml(elapsed)}</small></div>`;
+            return `<div class="diag ${result.status}"><div class="diag-head"><strong>${label}</strong><small>${escapeHtml(elapsed)}</small></div><div>${escapeHtml(result.reason)}</div></div>`;
         }
         function showSummary() {
             SuiteCoreToggle.render(currentStatus,coreStatus);
@@ -170,16 +170,20 @@ let currentStatus = null;
             const pill = document.getElementById("pill-core-status");
             if (!pill || !coreStatus) return;
             const action = document.getElementById('btn-core-manage');
-            action.disabled = false; action.textContent = coreStatus.installed ? '卸载反重力' : '安装反重力';
+            action.disabled = false;
+            action.textContent = coreStatus.installed ? '卸载反重力' : '安装反重力';
+            action.className = coreStatus.installed ? 'btn btn-secondary' : 'btn btn-primary';
             if (coreStatus.installed) {
                 pill.className = "pill pill-active";
+                pill.style.borderColor = "";
+                pill.style.color = "";
                 pill.innerHTML = `🟢 反重力本体: 已就绪 (${coreStatus.size_mb}MB)`;
                 pill.style.cursor = "pointer";
                 pill.onclick = () => openCoreInstallModal();
             } else {
                 pill.className = "pill";
                 pill.style.borderColor = "#f59e0b";
-                pill.style.color = "#f59e0b";
+                pill.style.color = "#fbbf24";
                 pill.innerHTML = `🟡 反重力本体: 未安装 (点击安装)`;
                 pill.style.cursor = "pointer";
                 pill.onclick = () => openCoreInstallModal();
@@ -225,10 +229,10 @@ let currentStatus = null;
                         <div class="card-head">
                             <div class="card-title">
                                 ${escapeHtml(p.name)}
-                                ${isCur && currentStatus.antigravity_ready ? '<span class="pill pill-active" style="padding:2px 8px; font-size:10px;">当前运行</span>' : ''}
+                                ${isCur && currentStatus.antigravity_ready ? '<span class="pill pill-running">● 当前运行</span>' : ''}
                                 ${isDef ? '<span class="tag-default">开机默认</span>' : ''}
                             </div>
-                            <div style="font-size:12px; color:var(--text-sub);">
+                            <div class="card-email">
                                 ${p.email ? '📧 ' + escapeHtml(p.email) : '未登录'}
                             </div>
                         </div>
@@ -238,7 +242,7 @@ let currentStatus = null;
                         </div>
                         ${diagnosticMarkup(p)}
                         <div class="card-actions">
-                            <button class="btn btn-primary" data-launch-id="${p.id}" onclick="profileAction('${p.id}')" ${isStarting || (currentStatus.starting_profile_id && !ready) ? 'disabled' : ''}>${isStarting ? '启动中…' : ready ? '进入' : '切换并启动'}</button>
+                            <button class="btn ${ready ? 'btn-enter' : 'btn-primary'}" data-launch-id="${p.id}" onclick="profileAction('${p.id}')" ${isStarting || (currentStatus.starting_profile_id && !ready) ? 'disabled' : ''}>${isStarting ? '启动中…' : ready ? '进入' : '切换并启动'}</button>
                             <button class="btn btn-secondary" onclick="detectProfile('${p.id}')" ${detecting ? 'disabled' : ''}>${detecting ? '检测中…' : '检测'}</button>
                             <button class="btn btn-secondary" onclick="openEditModal('${p.id}')">📝 详情与编辑</button>
                             <button class="btn btn-secondary" onclick="toggleDefault('${p.id}')">${isDef ? '取消默认' : '⭐️ 设为开机默认'}</button>
@@ -267,18 +271,18 @@ let currentStatus = null;
                         <div class="card-head">
                             <div class="card-title">
                                 🛡️ ${escapeHtml(px.name)}
-                                <span class="pill" style="padding:2px 8px; font-size:10px; text-transform:uppercase;">${escapeHtml(px.protocol==='socks5h'?'socks5':px.protocol)}</span>
+                                <span class="pill pill-proto">${escapeHtml(px.protocol==='socks5h'?'socks5':px.protocol)}</span>
                             </div>
-                            <button class="btn btn-danger" style="padding:4px 8px; font-size:11px;" onclick="deleteProxy('${px.id}')">删除</button>
+                            <button class="btn btn-danger" style="min-height:30px; padding:4px 10px; font-size:12px;" onclick="deleteProxy('${px.id}')">删除</button>
                         </div>
                         <div class="card-meta">
-                            <span>地址: ${escapeHtml(px.host)}:${escapeHtml(px.port)}</span>
+                            <span>地址: <b>${escapeHtml(px.host)}:${escapeHtml(px.port)}</b></span>
                             <span>鉴权: ${px.username ? '账号密码保护' : '免密'}</span>
-                            <span>ID: ${escapeHtml(px.id)}</span>
+                            <span style="font-family:ui-monospace,monospace;">ID: ${escapeHtml(px.id)}</span>
                         </div>
                         <div class="card-actions">
                             <button class="btn btn-secondary" onclick="openEditProxy('${px.id}')">详情与编辑</button>
-                            <button class="btn btn-secondary" style="font-size:12px; padding:4px 10px;" id="test-btn-${px.id}" onclick="testProxy('${px.id}')">⚡ 测试连通性与出口 IP</button>
+                            <button class="btn btn-secondary" id="test-btn-${px.id}" onclick="testProxy('${px.id}')">⚡ 测试连通性与出口 IP</button>
                             <span id="test-result-${px.id}" style="font-size:12px; color:var(--text-sub);"></span>
                         </div>
                     `;
