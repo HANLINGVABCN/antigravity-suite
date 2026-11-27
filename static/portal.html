@@ -366,7 +366,7 @@
         <div class="form-group"><label>最新正式版</label><strong id="update-latest-version">尚未检查</strong></div>
         <div id="suite-update-status" class="diag" role="status">点击检查更新，从本项目 GitHub 发布页读取版本。</div>
         <p id="suite-update-support" style="font-size:13px;color:var(--text-sub)"></p>
-        <p style="font-size:13px;color:var(--text-sub)">自动更新管理后台。更新前保存运行状态并备份，保留当前密码、验证器、账号配置、节点及聊天记录。更新期间后台会短暂重启，页面会自动等待并刷新。</p>
+        <p style="font-size:13px;color:var(--text-sub)">自动更新管理后台（依赖无变化时复用现有环境，不重复打包本体和聊天记录）。更新后自动恢复原运行配置，保留密码、验证器、账号、节点与聊天记录，页面会自动等待并刷新。</p>
         <details id="suite-update-notes"><summary>新版更新说明</summary><pre id="suite-update-notes-content" style="white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;font-size:13px;line-height:1.7"></pre></details>
         <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:20px;">
             <button class="btn btn-secondary" onclick="PortalUI.close('modal-suite-update')">关闭</button>

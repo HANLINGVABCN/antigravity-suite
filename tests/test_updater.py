@@ -14,8 +14,8 @@ import pytest
 from config import atomic_json
 from server import create_app
 from suite_updater import REPOSITORY, SuiteUpdater, extract_release, release_asset
-from test_suite import FakeSupervisor, config, login, start
-from update_worker import build_environment, run_update
+from test_suite import FakeProcess, FakeSupervisor, config, login, start
+from update_worker import build_environment, can_reuse_environment, run_update
 
 
 def bundle(path,version='0.8.0',extras=None):
@@ -87,7 +87,12 @@ def update_fixture(tmp_path):
 
 def test_update_worker_replaces_source_env_preserves_password_mfa_ids_nodes_and_chat_files(tmp_path):
     plan,build=update_fixture(tmp_path)
-    data=Path(plan['data']);before={name:(data/name).read_bytes() for name in ('config.json','profiles.json','proxies.json')}
+    data=Path(plan['data'])
+    core_dir=data/'core';core_dir.mkdir();(core_dir/'huge-binary').write_bytes(b'x'*1024)
+    before={name:(data/name).read_bytes() for name in ('config.json','profiles.json','proxies.json')}
+    stale_old=data/'updates/older-job-1';stale_old.mkdir(parents=True);(stale_old/'dummy').write_text('old')
+    stale_mid=data/'updates/older-job-2';stale_mid.mkdir(parents=True);(stale_mid/'dummy').write_text('mid')
+    os.utime(stale_old,(100,100));os.utime(stale_mid,(200,200))
     calls=[]
     run_update(plan,service=lambda spec,action:calls.append(action),health=lambda plan,version:None,build=build)
     status=json.loads(Path(plan['state_file']).read_text())
@@ -96,7 +101,14 @@ def test_update_worker_replaces_source_env_preserves_password_mfa_ids_nodes_and_
     assert (Path(plan['live'])/'.venv/new').is_file()
     assert before=={name:(data/name).read_bytes() for name in before}
     assert (data/'shared-history/conversations/keep.txt').read_text()=='all chats'
-    assert (Path(status['backup_dir'])/'private-data.tar.gz').is_file()
+    assert (core_dir/'huge-binary').is_file()
+    backup_dir=Path(status['backup_dir'])
+    assert not (backup_dir/'private-data.tar.gz').exists()
+    assert (backup_dir/'config.json').is_file() and (backup_dir/'profiles.json').is_file() and (backup_dir/'proxies.json').is_file()
+    assert (backup_dir/'source/server.py').is_file()
+    assert not (Path(plan['job_dir'])/'previous-environment').exists()
+    assert not (Path(plan['job_dir'])/'source').exists()
+    assert not stale_old.exists() and stale_mid.exists()
     assert not (data/'updates/update.lock').exists()
 
 
@@ -201,3 +213,53 @@ def test_existing_virtualenv_can_be_copied_when_standard_venv_bootstrap_is_missi
     assert (env/'bin/python').read_text()=='dummy-python'
     assert (original/'original').read_text()=='original environment'
     assert any('pip' in command for command in calls)
+
+
+def test_unchanged_requirements_reuses_existing_venv_and_resumes_active_profile(tmp_path):
+    plan,_=update_fixture(tmp_path)
+    live=Path(plan['live']);source=Path(plan['source']);data=Path(plan['data'])
+    (live/'requirements.txt').write_bytes(b'aiohttp>=3.9\n');(source/'requirements.txt').write_bytes(b'aiohttp>=3.9\n')
+    plan['files']['requirements.txt']=hashlib.sha256(b'aiohttp>=3.9\n').hexdigest()
+    (live/'.venv/bin').mkdir(parents=True);(live/'.venv/bin/python').write_text('fake-python')
+    plan['resume_profile_id']='fixed-id'
+    assert can_reuse_environment(plan,runner=lambda *a,**kw:None) is True
+    (source/'requirements.txt').write_bytes(b'aiohttp>=4.0\n')
+    assert can_reuse_environment(plan,runner=lambda *a,**kw:None) is False
+    (source/'requirements.txt').write_bytes(b'aiohttp>=3.9\n')
+    calls=[]
+    run_update(plan,service=lambda spec,action:calls.append(action),health=lambda plan,version:None,
+               build=lambda plan:pytest.fail('unchanged requirements must reuse existing .venv'),
+               reuse_check=lambda p:can_reuse_environment(p,runner=lambda *a,**kw:None))
+    status=json.loads(Path(plan['state_file']).read_text())
+    assert status['phase']=='success' and calls==['stop','start']
+    assert (live/'.venv/original').is_file()
+    saved_cfg=json.loads((data/'config.json').read_text(encoding='utf-8'))
+    assert saved_cfg['restart_resume_profile_id']=='fixed-id'
+
+
+def test_updater_records_running_profile_for_resume_and_skips_when_stopped(tmp_path,monkeypatch):
+    async def scenario():
+        app=create_app(config(tmp_path),supervisor=FakeSupervisor(45000));state=app['state']
+        state.updater.controller=dict(kind='test')
+        p=state.profiles.create_profile('Active Account')
+        state.active=p['id'];state.supervisor.process=FakeProcess()
+        archive=tmp_path/'release.zip';bundle(archive,'99.0.0');meta,checksum=release(archive,'99.0.0')
+        async def download(url,dest,limit,expected_size=None):
+            if '/releases/latest' in url:Path(dest).write_text(json.dumps(meta))
+            elif url.endswith('.sha256'):Path(dest).write_text(checksum)
+            else:shutil.copy2(archive,dest)
+        state.updater._download=download
+        launched=[]
+        import suite_updater
+        monkeypatch.setattr(suite_updater,'launch_worker',lambda *args:launched.append(args))
+        await state.updater.start();await state.updater.task
+        plan=json.loads(Path(launched[0][3]).read_text())
+        assert plan['resume_profile_id']==p['id']
+        # When engine is stopped, updater must not record a resume profile.
+        (state.updater.root/'update.lock').unlink(missing_ok=True)
+        atomic_json(state.updater.status_file,dict(phase='idle'))
+        state.supervisor.stop_antigravity()
+        await state.updater.start();await state.updater.task
+        plan2=json.loads(Path(launched[1][3]).read_text())
+        assert plan2['resume_profile_id'] is None
+    asyncio.run(scenario())

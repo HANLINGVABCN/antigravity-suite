@@ -6,7 +6,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tarfile
 import tempfile
 import time
 import urllib.error
@@ -14,6 +13,8 @@ import urllib.request
 from pathlib import Path
 
 from service_control import control
+
+METADATA_FILES=('config.json','profiles.json','proxies.json','shared-native-runtime.json','login-session-state.json')
 
 
 def atomic(path,value):
@@ -109,7 +110,49 @@ def build_environment(plan,runner=subprocess.run):
     return environment
 
 
-def run_update(plan,service=control,health=check_running,build=build_environment):
+def can_reuse_environment(plan,runner=subprocess.run):
+    live=Path(plan['live']);source=Path(plan['source'])
+    live_req=live/'requirements.txt';source_req=source/'requirements.txt'
+    environment=live/'.venv';python=environment/'bin/python'
+    if not (live_req.is_file() and source_req.is_file() and environment.is_dir() and python.is_file()):
+        return False
+    if live_req.read_bytes().strip()!=source_req.read_bytes().strip():
+        return False
+    try:
+        runner([str(python),'-c','import aiohttp,aiohttp_socks,qrcode'],check=True,capture_output=True,timeout=20)
+        return True
+    except Exception:
+        return False
+
+
+def _set_resume_profile(data_dir,profile_id):
+    if not profile_id:return
+    cfg_file=Path(data_dir)/'config.json'
+    if not cfg_file.is_file():return
+    cfg=json.loads(cfg_file.read_text(encoding='utf-8'))
+    cfg['restart_resume_profile_id']=profile_id
+    atomic(cfg_file,cfg)
+
+
+def prune_update_artifacts(plan,keep=2):
+    job=Path(plan['job_dir']).resolve()
+    updates_root=Path(plan['data']).resolve()/'updates'
+    for rel in ('source.zip','source.zip.sha256','source','previous-environment'):
+        target=job/rel
+        try:
+            if target.is_dir() and not target.is_symlink():shutil.rmtree(target)
+            elif target.exists() or target.is_symlink():target.unlink()
+        except OSError:pass
+    if not updates_root.is_dir():return
+    try:
+        dirs=[entry for entry in updates_root.iterdir() if entry.is_dir() and not entry.is_symlink()]
+        dirs.sort(key=lambda entry:(entry.resolve()!=job,-entry.stat().st_mtime))
+        for stale in dirs[keep:]:
+            if stale.resolve()!=job:shutil.rmtree(stale,ignore_errors=True)
+    except OSError:pass
+
+
+def run_update(plan,service=control,health=check_running,build=build_environment,reuse_check=can_reuse_environment):
     os.umask(0o077)
     live=Path(plan['live']).resolve();source=Path(plan['source']).resolve();job=Path(plan['job_dir']).resolve()
     backup=job/'backup';backup.mkdir(mode=0o700,exist_ok=True)
@@ -129,11 +172,14 @@ def run_update(plan,service=control,health=check_running,build=build_environment
             raise ValueError('已安装源码清单包含不安全路径')
         if set(path.parts)&{'data','profiles','.venv','.git','updates','config.json','profiles.json','proxies.json'}:
             raise ValueError('源码清单不能修改私有数据')
-    stopped=False;changed=[];environment_swapped=False;had_environment=(live/'.venv').exists()
+    stopped=False;changed=[];environment=None;environment_swapped=False;had_environment=(live/'.venv').exists()
     try:
-        progress(plan,'dependencies','正在准备新版运行环境，原服务继续运行')
-        environment=build(plan)
-        progress(plan,'backup','正在保存运行状态并备份，后台将短暂重启')
+        if reuse_check(plan):
+            progress(plan,'dependencies','依赖无变化，复用现有运行环境')
+        else:
+            progress(plan,'dependencies','正在准备新版运行环境，原服务继续运行')
+            environment=build(plan)
+        progress(plan,'backup','正在保存运行状态并备份配置，后台将短暂重启')
         service(plan['controller'],'stop');stopped=True
         saved=security_snapshot(plan['data'])
         for name in names:
@@ -141,29 +187,28 @@ def run_update(plan,service=control,health=check_running,build=build_environment
             if target.is_file():
                 (backup/'source'/name).parent.mkdir(parents=True,exist_ok=True)
                 shutil.copy2(target,backup/'source'/name)
-        # Includes the original configuration and chat state, avoids recursively backing up this job.
-        with tarfile.open(backup/'private-data.tar.gz','w:gz') as archive:
-            for entry in Path(plan['data']).iterdir():
-                if entry.name!='updates':archive.add(entry,arcname=entry.name)
-        for name in ('config.json','profiles.json','proxies.json','shared-native-runtime.json'):
+        for name in METADATA_FILES:
             path=Path(plan['data'])/name
             if path.is_file():shutil.copy2(path,backup/name)
+        _set_resume_profile(plan['data'],plan.get('resume_profile_id'))
         progress(plan,'installing','正在替换管理后台，账号和节点保留',backup_dir=str(backup))
         for name in names:
             changed.append(name);target=live/name
             if name in source_manifest:replace_file(source/name,target)
             elif target.is_file():target.unlink()
-        if had_environment:os.replace(live/'.venv',job/'previous-environment')
-        try:os.replace(environment,live/'.venv')
-        except Exception:
-            if had_environment:os.replace(job/'previous-environment',live/'.venv')
-            raise
-        environment_swapped=True
+        if environment is not None:
+            if had_environment:os.replace(live/'.venv',job/'previous-environment')
+            try:os.replace(environment,live/'.venv')
+            except Exception:
+                if had_environment:os.replace(job/'previous-environment',live/'.venv')
+                raise
+            environment_swapped=True
         progress(plan,'restarting','新版后台正在启动，请稍候',backup_dir=str(backup))
         service(plan['controller'],'start');stopped=False
         health(plan,plan['version'])
         if security_snapshot(plan['data'])!=saved:raise RuntimeError('账号、节点或监听设置的保留检查未通过')
         atomic(managed_path,sorted(source_manifest))
+        prune_update_artifacts(plan)
         progress(plan,'success','更新完成，账号配置已保留',backup_dir=str(backup),current_version=plan['version'])
     except Exception:
         if changed:
@@ -179,8 +224,9 @@ def run_update(plan,service=control,health=check_running,build=build_environment
             if environment_swapped:
                 os.replace(live/'.venv',job/'failed-environment')
                 if had_environment:os.replace(job/'previous-environment',live/'.venv')
-            for name in ('config.json','profiles.json','proxies.json','shared-native-runtime.json'):
+            for name in METADATA_FILES:
                 if (backup/name).is_file():replace_file(backup/name,Path(plan['data'])/name)
+            _set_resume_profile(plan['data'],plan.get('resume_profile_id'))
         restored=False
         if stopped:
             try:

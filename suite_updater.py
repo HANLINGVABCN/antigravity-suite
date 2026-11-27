@@ -155,7 +155,7 @@ class SuiteUpdater:
             await self.check()
             if not self.status()['update_available']:return self.status()
             if not os.access(SUITE_DIR,os.W_OK):raise ValueError('管理服务没有源码目录写权限，无法自动更新')
-            if shutil.disk_usage(self.state.data).free<768*1024*1024:raise ValueError('可用磁盘空间不足，请至少保留 768MB 后再更新')
+            if shutil.disk_usage(self.state.data).free<256*1024*1024:raise ValueError('可用磁盘空间不足，请至少保留 256MB 后再更新')
             self.root.mkdir(parents=True,exist_ok=True,mode=0o700)
             job_id=secrets.token_hex(12);lock=self.root/'update.lock'
             try:
@@ -163,9 +163,12 @@ class SuiteUpdater:
             except FileExistsError:raise ValueError('已有更新任务，请等待它结束后重试')
             with os.fdopen(fd,'w') as output:output.write(job_id)
             job=self.root/job_id;job.mkdir(mode=0o700)
+            s=self.state
+            engine_running=bool(s.supervisor.process and s.supervisor.process.poll() is None)
+            resume_profile_id=s.active if (engine_running or s.supervisor.active_port) and not s.cfg.get('native_logged_out') else None
             plan=dict(job_id=job_id,job_dir=str(job),live=str(SUITE_DIR),data=str(self.state.data),
                 source=str(job/'source'),state_file=str(self.status_file),controller=self.controller,
-                version=self.release['tag_name'][1:],started_at=time.time())
+                version=self.release['tag_name'][1:],started_at=time.time(),resume_profile_id=resume_profile_id)
             atomic_json(self.status_file,dict(job_id=job_id,phase='queued',message='更新任务已提交',target_version=plan['version'],started_at=plan['started_at']))
             self.task=asyncio.create_task(self.prepare(plan,dict(self.release)))
             return self.status()
