@@ -3,6 +3,7 @@ let currentStatus = null;
         let coreInstallPollTimer = null;
         let currentEditingProfileId = null;
         let currentEditingProxyId = null;
+        let proxyReturnTargetSelectId = null;
         let originalProxyLink = "";
         let proxyNameBeforeEdit = "";
         let exportProfileId = null;
@@ -291,25 +292,61 @@ let currentStatus = null;
             updateProxySelects(proxies);
         }
 
-        function updateProxySelects(proxies) {
+        function updateProxySelects(proxies, options = {}) {
+            const list = proxies || [];
             ['prof-in-proxy', 'oauth-prof-proxy', 'edit-prof-proxy'].forEach(selId => {
                 const sel = document.getElementById(selId);
                 if (!sel) return;
-                if (PortalUI.hasOpenDialog()) return;
-                const selected = sel.value;
+                if (PortalUI.hasOpenDialog() && !options.force) return;
+                const hasExplicit = options.selectById && Object.prototype.hasOwnProperty.call(options.selectById, selId);
+                const selected = hasExplicit ? options.selectById[selId] : sel.value;
                 sel.innerHTML = `<option value="">🌐 直连（不使用代理）</option>`;
-                proxies.forEach(px => {
+                list.forEach(px => {
                     sel.innerHTML += `<option value="${px.id}">🛡️ ${escapeHtml(px.name)} (${escapeHtml(px.host)}:${escapeHtml(px.port)})</option>`;
                 });
                 if ([...sel.options].some(option => option.value === selected)) sel.value = selected;
             });
         }
 
-        // Modals
-        function openAddProxyModal() {
+        function mergeProxiesIntoStatus(added) {
+            if (!added || !added.length) return;
+            if (!currentStatus) currentStatus = { proxies: [] };
+            if (!Array.isArray(currentStatus.proxies)) currentStatus.proxies = [];
+            for (const item of added) {
+                if (!item?.id) continue;
+                const index = currentStatus.proxies.findIndex(existing => existing.id === item.id);
+                if (index >= 0) currentStatus.proxies[index] = item;
+                else currentStatus.proxies.push(item);
+            }
+        }
+
+        function resetProxyModalState() {
             currentEditingProxyId = null;
             originalProxyLink = "";
             proxyNameBeforeEdit = "";
+            proxyReturnTargetSelectId = null;
+            document.getElementById("proxy-links").value = "";
+            document.getElementById("proxy-in-pass").value = "";
+            document.getElementById("proxy-in-pass").type = "password";
+        }
+
+        function closeProxyModal() {
+            const nested = Boolean(proxyReturnTargetSelectId);
+            resetProxyModalState();
+            if (nested) PortalUI.close("modal-proxy");
+            else closeModals();
+        }
+
+        function openAddProxyFromSelect(selectId) {
+            openAddProxyModal({ returnSelectId: selectId });
+        }
+
+        // Modals
+        function openAddProxyModal(options = {}) {
+            currentEditingProxyId = null;
+            originalProxyLink = "";
+            proxyNameBeforeEdit = "";
+            proxyReturnTargetSelectId = options.returnSelectId || null;
             document.getElementById("proxy-modal-title").textContent = "添加出站代理节点";
             document.getElementById("proxy-identity").style.display = "none";
             document.getElementById("proxy-password-actions").style.display = "none";
@@ -378,12 +415,38 @@ let currentStatus = null;
             input.type = "text"; button.textContent = "隐藏密码";
         }
         function openCreateModal() {
+            updateProxySelects(currentStatus?.proxies || [], { force: true, selectById: { 'prof-in-proxy': '' } });
             PortalUI.open("modal-create-profile");
         }
+        function resetOAuthModalState() {
+            oauthSessionState = null;
+            oauthAuthUrl = "";
+            const authUrlInput = document.getElementById("oauth-auth-url");
+            if (authUrlInput) authUrlInput.value = "";
+            const codeInput = document.getElementById("oauth-code-input");
+            if (codeInput) codeInput.value = "";
+            const nameInput = document.getElementById("oauth-prof-name");
+            if (nameInput) nameInput.value = "";
+            const linkBox = document.getElementById("oauth-link-box");
+            if (linkBox) linkBox.hidden = true;
+            const copyStatus = document.getElementById("oauth-copy-status");
+            if (copyStatus) {
+                copyStatus.textContent = "已生成授权链接（10 分钟内有效），本页面不会自动跳转，请自行复制或点击打开。";
+                copyStatus.style.color = "var(--text-sub)";
+            }
+            const step2 = document.getElementById("oauth-step-2");
+            if (step2) step2.style.display = "none";
+            const openBtn = document.getElementById("btn-oauth-open");
+            if (openBtn) {
+                openBtn.style.display = "block";
+                openBtn.disabled = false;
+                openBtn.textContent = "🔗 获取 Google 授权链接";
+            }
+        }
         function openOAuthModal() {
+            resetOAuthModalState();
+            updateProxySelects(currentStatus?.proxies || [], { force: true, selectById: { 'oauth-prof-proxy': '' } });
             PortalUI.open("modal-oauth");
-            document.getElementById("oauth-step-2").style.display = "none";
-            document.getElementById("btn-oauth-open").style.display = "block";
         }
         function closeModals() {
             cancelAuthenticatorSetup().catch(() => {});
@@ -392,18 +455,16 @@ let currentStatus = null;
             document.getElementById("settings-new").value = "";
             document.getElementById("mfa-current-code").value = "";
             document.getElementById("external-import-json").value = "";
+            resetOAuthModalState();
             PortalUI.closeAll();
-            currentEditingProxyId = null;
-            originalProxyLink = "";
-            proxyNameBeforeEdit = "";
-            document.getElementById("proxy-links").value = "";
-            document.getElementById("proxy-in-pass").value = "";
-            document.getElementById("proxy-in-pass").type = "password";
+            resetProxyModalState();
         }
 
         // Actions
         async function saveProxy() {
             const links = document.getElementById("proxy-links").value.trim();
+            const button = document.getElementById("proxy-save-button");
+            PortalUI.clearError("modal-proxy");
             if (currentEditingProxyId) {
                 const fields = {name:document.getElementById("proxy-in-name").value,
                         protocol:document.getElementById("proxy-in-proto").value || document.getElementById("proxy-in-proto").dataset.savedProtocol,
@@ -413,8 +474,6 @@ let currentStatus = null;
                         password:document.getElementById("proxy-in-pass").value,
                         clear_password:document.getElementById("proxy-clear-password").checked};
                 const data = ProxyEditor.buildUpdate(currentEditingProxyId, originalProxyLink, links, fields);
-                const button = document.getElementById("proxy-save-button");
-                PortalUI.clearError("modal-proxy");
                 button.disabled = true;
                 try {
                     await fetch("/__suite/api/proxies/update", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(data)});
@@ -429,35 +488,61 @@ let currentStatus = null;
             const port = document.getElementById("proxy-in-port").value;
             const username = document.getElementById("proxy-in-user").value;
             const password = document.getElementById("proxy-in-pass").value;
-            if (links) {
-                const manual = {};
-                for (const [key,value] of Object.entries({name,host,port,username,password})) {
-                    if (value !== "") manual[key] = value;
-                }
-                try {
+
+            if (!links && (!name || !host || !port)) {
+                PortalUI.showError("modal-proxy", "请填写节点链接，或完整填写节点名称、主机和端口！");
+                return;
+            }
+
+            button.disabled = true;
+            try {
+                let createdProxies = [];
+                if (links) {
+                    const manual = {};
+                    for (const [key,value] of Object.entries({name,host,port,username,password})) {
+                        if (value !== "") manual[key] = value;
+                    }
                     if (Object.keys(manual).length) {
                         manual.protocol = proto;
-                        await fetch("/__suite/api/proxies", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...manual,link:links})});
+                        const res = await fetch("/__suite/api/proxies", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...manual,link:links})});
+                        const data = await res.json();
+                        if (data.proxy) createdProxies = [data.proxy];
                     } else {
-                        await fetch("/__suite/api/proxies/import-links", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({links})});
+                        const res = await fetch("/__suite/api/proxies/import-links", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({links})});
+                        const data = await res.json();
+                        createdProxies = data.proxies || [];
                     }
-                    closeModals(); await fetchStatus();
-                } catch (error) { alert(error.message); }
-                return;
-            }
+                } else {
+                    const res = await fetch("/__suite/api/proxies", {
+                        method: "POST",
+                        headers: {"Content-Type": "application/json"},
+                        body: JSON.stringify({ name, protocol: proto, host, port, username, password })
+                    });
+                    const data = await res.json();
+                    if (data.proxy) createdProxies = [data.proxy];
+                }
 
-            if (!name || !host || !port) {
-                alert("请完整填写节点名称、主机和端口！");
-                return;
+                const returnSelectId = proxyReturnTargetSelectId;
+                const createdId = createdProxies[0]?.id || "";
+                if (returnSelectId) {
+                    mergeProxiesIntoStatus(createdProxies);
+                    resetProxyModalState();
+                    PortalUI.close("modal-proxy");
+                    updateProxySelects(currentStatus?.proxies || [], {
+                        force: true,
+                        selectById: createdId ? { [returnSelectId]: createdId } : {}
+                    });
+                    document.getElementById(returnSelectId)?.focus({ preventScroll: true });
+                    fetchStatus();
+                } else {
+                    closeModals();
+                    await fetchStatus();
+                }
+            } catch (error) {
+                PortalUI.showError("modal-proxy", error.message);
+            } finally {
+                button.disabled = false;
             }
-
-            await fetch("/__suite/api/proxies", {
-                method: "POST",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({ name, protocol: proto, host, port, username, password })
-            });
-            closeModals();
-            fetchStatus();
         }
 
         async function testProxy(id) {
@@ -583,6 +668,7 @@ let currentStatus = null;
                 const data = await res.json();
                 if (data.ok) {
                     const p = data.profile;
+                    updateProxySelects(currentStatus?.proxies || [], { force: true, selectById: { 'edit-prof-proxy': p.proxy_id || "" } });
                     document.getElementById("edit-prof-name").value = p.name || "";
                     document.getElementById("edit-prof-email").value = (p.email && p.email !== "未登录") ? p.email : "";
                     document.getElementById("edit-prof-proxy").value = p.proxy_id || "";
@@ -807,39 +893,101 @@ let currentStatus = null;
 
         // OAuth Flow (like CPA)
         let oauthSessionState = null;
+        let oauthAuthUrl = "";
         async function startOAuthFlow() {
-            const res = await fetch("/__suite/api/auth/google/start", { method: "POST" });
-            const data = await res.json();
-            oauthSessionState = data.state;
-            window.open(data.auth_url, "_blank");
-            document.getElementById("btn-oauth-open").style.display = "none";
-            document.getElementById("oauth-step-2").style.display = "block";
+            PortalUI.clearError("modal-oauth");
+            const openBtn = document.getElementById("btn-oauth-open");
+            const refreshBtn = document.getElementById("btn-oauth-refresh");
+            const regenerating = Boolean(oauthAuthUrl);
+            if (openBtn) { openBtn.disabled = true; openBtn.textContent = "正在生成授权链接…"; }
+            if (refreshBtn) refreshBtn.disabled = true;
+            try {
+                const res = await fetch("/__suite/api/auth/google/start", { method: "POST" });
+                const data = await res.json();
+                oauthSessionState = data.state;
+                oauthAuthUrl = data.auth_url;
+                const authUrlInput = document.getElementById("oauth-auth-url");
+                authUrlInput.value = oauthAuthUrl;
+                document.getElementById("oauth-link-box").hidden = false;
+                if (openBtn) openBtn.style.display = "none";
+                document.getElementById("oauth-step-2").style.display = "block";
+                const status = document.getElementById("oauth-copy-status");
+                status.textContent = regenerating
+                    ? "已重新生成新的授权链接（10 分钟内有效），请使用新链接完成登录。"
+                    : "已生成授权链接（10 分钟内有效），本页面不会自动跳转，请自行复制或点击打开。";
+                status.style.color = "var(--text-sub)";
+            } catch (error) {
+                PortalUI.showError("modal-oauth", error.message);
+            } finally {
+                if (openBtn) { openBtn.disabled = false; openBtn.textContent = "🔗 获取 Google 授权链接"; }
+                if (refreshBtn) refreshBtn.disabled = false;
+            }
+        }
+
+        async function copyOAuthUrl() {
+            if (!oauthAuthUrl) return;
+            const input = document.getElementById("oauth-auth-url");
+            const status = document.getElementById("oauth-copy-status");
+            try {
+                if (navigator.clipboard?.writeText) {
+                    await navigator.clipboard.writeText(oauthAuthUrl);
+                } else {
+                    input.focus();
+                    input.select();
+                    input.setSelectionRange(0, oauthAuthUrl.length);
+                    if (!document.execCommand("copy")) throw new Error("clipboard unavailable");
+                }
+                status.textContent = "✅ 已复制授权链接，请粘贴到任意浏览器中打开完成 Google 登录。";
+                status.style.color = "#34d399";
+            } catch {
+                input.focus();
+                input.select();
+                input.setSelectionRange(0, oauthAuthUrl.length);
+                status.textContent = "已为你全选链接，请按 Ctrl+C 或长按复制。";
+                status.style.color = "#fbbf24";
+            }
+        }
+
+        function openOAuthUrl() {
+            if (!oauthAuthUrl) return;
+            window.open(oauthAuthUrl, "_blank", "noopener,noreferrer");
         }
 
         async function completeOAuth() {
-            let code = document.getElementById("oauth-code-input").value.trim();
+            PortalUI.clearError("modal-oauth");
+            const code = document.getElementById("oauth-code-input").value.trim();
             const name = document.getElementById("oauth-prof-name").value.trim();
             const proxy_id = document.getElementById("oauth-prof-proxy").value;
-            if (!code) { alert("请输入授权网址或授权码！"); return; }
-            if (!name) { alert("请为该档案命名！"); return; }
+            if (!oauthSessionState) { PortalUI.showError("modal-oauth", "请先获取 Google 授权链接！"); return; }
+            if (!code) { PortalUI.showError("modal-oauth", "请输入授权后的完整回调网址或授权码！"); return; }
 
-            const res = await fetch("/__suite/api/auth/google/complete", {
-                method: "POST",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({
-                    code: code,
-                    state: oauthSessionState,
-                    name: name,
-                    proxy_id: proxy_id
-                })
-            });
-            const result = await res.json();
-            if (result.ok) {
-                closeModals();
-                await fetchStatus();
-                alert("授权凭据已保存，已自动检测一次。请查看该档案的检测结果；需要使用时点击“切换并启动”。");
-            } else {
-                alert("登录失败: " + result.error);
+            const button = document.getElementById("btn-oauth-complete");
+            button.disabled = true;
+            button.textContent = "正在验证并保存…";
+            try {
+                const res = await fetch("/__suite/api/auth/google/complete", {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({
+                        code: code,
+                        state: oauthSessionState,
+                        name: name,
+                        proxy_id: proxy_id
+                    })
+                });
+                const result = await res.json();
+                if (result.ok) {
+                    closeModals();
+                    await fetchStatus();
+                    alert("授权凭据已保存，已自动检测一次。请查看该档案的检测结果；需要使用时点击“切换并启动”。");
+                } else {
+                    PortalUI.showError("modal-oauth", "登录失败: " + result.error);
+                }
+            } catch (error) {
+                PortalUI.showError("modal-oauth", "登录失败: " + error.message);
+            } finally {
+                button.disabled = false;
+                button.textContent = "完成并绑定此档案";
             }
         }
 

@@ -85,6 +85,11 @@
     }
     async function dismiss(mask) {
         if (mask.id === 'modal-file-editor') { close(mask.id); return; }
+        if (mask.id === 'modal-proxy' && stack.length > 1) {
+            if (root.closeProxyModal) root.closeProxyModal();
+            else close(mask.id);
+            return;
+        }
         if (mask.id === 'modal-import-profile' && root.cancelProfileImport) { await root.cancelProfileImport(); return; }
         root.closeModals?.();
     }

@@ -669,3 +669,119 @@ def test_no_chat_attachment_says_no_chat_and_does_not_offer_history_modes(portal
     pw.expect(page.locator('#import-history-detail')).to_have_text('无聊天文件')
     pw.expect(page.locator('#import-include-history')).to_be_hidden()
     pw.expect(page.locator('#import-history-mode')).to_be_hidden()
+
+
+def test_oauth_modal_shows_copyable_link_and_adds_proxy_inline(portal):
+    page=portal['page'];state=portal['state']
+    page.set_viewport_size(dict(width=390,height=600))
+    page.evaluate('''()=>{
+        window.__openedUrls=[];
+        window.open=(url,target,features)=>{window.__openedUrls.push({url,target,features});return null;};
+    }''')
+    page.get_by_role('button',name='+ 登录 Google 账号',exact=True).click()
+    dialog=assert_dialog_reachable(page,'modal-oauth')
+    pw.expect(page.locator('#oauth-link-box')).to_be_hidden()
+    pw.expect(page.locator('#oauth-step-2')).to_be_hidden()
+
+    page.locator('#btn-oauth-open').click()
+    pw.expect(page.locator('#oauth-link-box')).to_be_visible()
+    pw.expect(page.locator('#oauth-step-2')).to_be_visible()
+    first_url=page.locator('#oauth-auth-url').input_value()
+    assert first_url.startswith('https://accounts.google.com/o/oauth2/v2/auth?')
+    assert 'code_challenge_method=S256' in first_url
+    assert page.evaluate('window.__openedUrls')==[]
+    assert_dialog_reachable(page,'modal-oauth')
+
+    page.locator('#btn-oauth-copy').click()
+    pw.expect(page.locator('#oauth-copy-status')).to_contain_text('复制')
+    page.locator('#btn-oauth-direct-open').click()
+    opened=page.evaluate('window.__openedUrls')
+    assert len(opened)==1 and opened[0]['url']==first_url and 'noopener' in (opened[0]['features'] or '')
+
+    page.locator('#btn-oauth-refresh').click()
+    pw.expect(page.locator('#oauth-auth-url')).not_to_have_value(first_url)
+    second_url=page.locator('#oauth-auth-url').input_value()
+    assert second_url.startswith('https://accounts.google.com/o/oauth2/v2/auth?')
+
+    page.locator('#oauth-code-input').fill('4/0A-dummy-callback-code')
+    page.locator('#oauth-prof-name').fill('自定义新账号')
+
+    # Canceling nested proxy modal returns to OAuth modal without losing state or inputs.
+    page.locator('#btn-oauth-add-proxy').click()
+    assert_dialog_reachable(page,'modal-proxy')
+    pw.expect(dialog).to_be_hidden()
+    page.keyboard.press('Escape')
+    pw.expect(page.locator('#modal-proxy')).to_be_hidden()
+    pw.expect(dialog).to_be_visible()
+    pw.expect(page.locator('#oauth-auth-url')).to_have_value(second_url)
+    pw.expect(page.locator('#oauth-code-input')).to_have_value('4/0A-dummy-callback-code')
+    pw.expect(page.locator('#oauth-prof-name')).to_have_value('自定义新账号')
+
+    # Adding a proxy via link inside OAuth modal selects it automatically upon return.
+    page.locator('#btn-oauth-add-proxy').click()
+    pw.expect(page.locator('#modal-proxy')).to_be_visible()
+    page.locator('#proxy-links').fill('socks5://198.51.100.10:1080#新建住宅节点')
+    page.locator('#proxy-save-button').click()
+    pw.expect(page.locator('#modal-proxy')).to_be_hidden()
+    pw.expect(dialog).to_be_visible()
+    added=next(p for p in state.proxies.list_proxies() if p['name']=='新建住宅节点')
+    pw.expect(page.locator('#oauth-prof-proxy')).to_have_value(added['id'])
+    pw.expect(page.locator('#oauth-auth-url')).to_have_value(second_url)
+    pw.expect(page.locator('#oauth-code-input')).to_have_value('4/0A-dummy-callback-code')
+    pw.expect(page.locator('#oauth-prof-name')).to_have_value('自定义新账号')
+
+    submitted=[]
+    def complete_route(route):
+        submitted.append(route.request.post_data_json)
+        route.fulfill(status=200,content_type='application/json',body=json.dumps(dict(ok=True,email='new@example.invalid',profile=portal['profile'])))
+    page.route('**/__suite/api/auth/google/complete',complete_route)
+    page.once('dialog',lambda d:d.accept())
+    page.locator('#btn-oauth-complete').click()
+    pw.expect(dialog).to_be_hidden()
+    assert len(submitted)==1
+    assert submitted[0]['code']=='4/0A-dummy-callback-code'
+    assert submitted[0]['name']=='自定义新账号'
+    assert submitted[0]['proxy_id']==added['id']
+    assert submitted[0]['state'] in second_url
+
+
+def test_edit_and_create_profile_modals_add_proxy_without_losing_edits(portal):
+    page=portal['page'];state=portal['state'];profile=portal['profile']
+    page.locator('#profile-container button:has-text("详情与编辑")').click()
+    pw.expect(page.locator('#edit-prof-name')).to_have_value(profile['name'])
+    page.locator('#edit-prof-name').fill('未保存的档案新名')
+    page.locator('#btn-edit-prof-add-proxy').click()
+    assert_dialog_reachable(page,'modal-proxy')
+    page.locator('#proxy-in-name').fill('档案弹窗新增节点')
+    page.locator('#proxy-in-proto').select_option('http')
+    page.locator('#proxy-in-host').fill('203.0.113.20')
+    page.locator('#proxy-in-port').fill('8080')
+    page.locator('#proxy-save-button').click()
+    pw.expect(page.locator('#modal-proxy')).to_be_hidden()
+    pw.expect(page.locator('#modal-edit-profile')).to_be_visible()
+    created=next(p for p in state.proxies.list_proxies() if p['name']=='档案弹窗新增节点')
+    pw.expect(page.locator('#edit-prof-name')).to_have_value('未保存的档案新名')
+    pw.expect(page.locator('#edit-prof-proxy')).to_have_value(created['id'])
+    page.once('dialog',lambda d:d.accept())
+    page.locator('#modal-edit-profile button:has-text("保存档案修改")').click()
+    pw.expect(page.locator('#modal-edit-profile')).to_be_hidden()
+    saved=state.profiles.get_profile(profile['id'])
+    assert saved['name']=='未保存的档案新名' and saved['proxy_id']==created['id']
+
+    page.get_by_role('button',name='+ 空配置',exact=True).click()
+    pw.expect(page.locator('#modal-create-profile')).to_be_visible()
+    page.locator('#prof-in-name').fill('空配置测试')
+    page.locator('#btn-create-prof-add-proxy').click()
+    pw.expect(page.locator('#modal-proxy')).to_be_visible()
+    page.locator('#modal-proxy button:has-text("取消")').click()
+    pw.expect(page.locator('#modal-proxy')).to_be_hidden()
+    pw.expect(page.locator('#modal-create-profile')).to_be_visible()
+    pw.expect(page.locator('#prof-in-name')).to_have_value('空配置测试')
+    page.locator('#btn-create-prof-add-proxy').click()
+    page.locator('#proxy-links').fill('http://198.51.100.30:8080#空配置节点')
+    page.locator('#proxy-save-button').click()
+    pw.expect(page.locator('#modal-proxy')).to_be_hidden()
+    pw.expect(page.locator('#modal-create-profile')).to_be_visible()
+    second=next(p for p in state.proxies.list_proxies() if p['name']=='空配置节点')
+    pw.expect(page.locator('#prof-in-proxy')).to_have_value(second['id'])
+    pw.expect(page.locator('#prof-in-name')).to_have_value('空配置测试')

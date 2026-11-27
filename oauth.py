@@ -75,7 +75,8 @@ async def google_api(request, s, path, data):
                              expires_in=token.get('expires_in',3599)), auth_method='consumer',
                    id_token_email=user.get('email',''), writer_id='antigravity')
     async with s.lock:
-        p = s.profiles.create_profile(data.get('name','Google账号'), proxy_id, user.get('email',''))
+        profile_name = str(data.get('name', '')).strip() or user.get('email', '').strip() or 'Google账号'
+        p = s.profiles.create_profile(profile_name, proxy_id, user.get('email',''))
         atomic_json(s.profiles.profile_dir(p['id'])/'store/jetski-standalone-oauth-token', content)
     s.request_detection(p['id'])
     return web.json_response(dict(ok=True, email=user.get('email',''), profile=p))

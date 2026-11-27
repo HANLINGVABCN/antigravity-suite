@@ -116,8 +116,8 @@
                 </div>
             </div>
             <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
-                <button class="btn btn-secondary" onclick="closeModals()">取消</button>
-                <button class="btn btn-primary" id="proxy-save-button" onclick="saveProxy()">保存节点</button>
+                <button type="button" class="btn btn-secondary" onclick="closeProxyModal()">取消</button>
+                <button type="button" class="btn btn-primary" id="proxy-save-button" onclick="saveProxy()">保存节点</button>
             </div>
         </div>
     </div>
@@ -131,10 +131,13 @@
                 <input class="form-control" id="prof-in-name" placeholder="例如: 账号A-主力开发">
             </div>
             <div class="form-group">
-                <label>绑定出站代理节点</label>
-                <select class="form-control" id="prof-in-proxy">
-                    <option value="">🌐 直连（不使用代理）</option>
-                </select>
+                <label for="prof-in-proxy">绑定出站代理节点</label>
+                <div class="proxy-select-row">
+                    <select class="form-control" id="prof-in-proxy">
+                        <option value="">🌐 直连（不使用代理）</option>
+                    </select>
+                    <button type="button" class="btn btn-secondary proxy-inline-add" id="btn-create-prof-add-proxy" onclick="openAddProxyFromSelect('prof-in-proxy')">+ 添加代理</button>
+                </div>
             </div>
             <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
                 <button class="btn btn-secondary" onclick="closeModals()">取消</button>
@@ -148,30 +151,42 @@
         <div class="modal-box">
             <div class="modal-title">登录并添加 Google 账号</div>
             <div style="font-size:13px; color:var(--text-sub); margin-bottom:16px; line-height:1.5;">
-                在本地浏览器打开授权页面，使用干净的住宅网络进行 Google 账号登录授权。
+                先生成 Google 授权链接，自行复制到任意浏览器或设备（如带干净住宅代理的浏览器）中完成登录，再把跳转后的回调网址粘贴回来保存。
             </div>
             <div class="form-group">
-                <label>第一步：获取并打开授权页面</label>
-                <button class="btn btn-primary" style="width:100%;" id="btn-oauth-open" onclick="startOAuthFlow()">🔗 获取 Google 授权链接并在新标签页打开</button>
+                <label for="oauth-auth-url">第一步：获取 Google 授权链接</label>
+                <button type="button" class="btn btn-primary" style="width:100%;" id="btn-oauth-open" onclick="startOAuthFlow()">🔗 获取 Google 授权链接</button>
+                <div id="oauth-link-box" hidden style="margin-top:10px;">
+                    <textarea class="form-control oauth-url-field" id="oauth-auth-url" rows="3" readonly aria-label="Google 授权链接"></textarea>
+                    <div class="oauth-link-actions">
+                        <button type="button" class="btn btn-primary" id="btn-oauth-copy" onclick="copyOAuthUrl()">📋 复制授权链接</button>
+                        <button type="button" class="btn btn-secondary" id="btn-oauth-direct-open" onclick="openOAuthUrl()">↗️ 在新标签页打开</button>
+                        <button type="button" class="btn btn-secondary" id="btn-oauth-refresh" onclick="startOAuthFlow()">🔄 重新生成</button>
+                    </div>
+                    <div id="oauth-copy-status" role="status" style="font-size:12px; color:var(--text-sub); margin-top:6px;">已生成授权链接（10 分钟内有效），本页面不会自动跳转，请自行复制或点击打开。</div>
+                </div>
             </div>
             <div class="form-group" id="oauth-step-2" style="display:none;">
-                <label style="line-height:1.4;">第二步：授权完成后，将浏览器跳转后的<span style="color:#38bdf8;">完整网址</span>或 <span style="color:#38bdf8;">code</span> 粘贴在此：</label>
+                <label for="oauth-code-input" style="line-height:1.4;">第二步：授权完成后，将浏览器跳转后的<span style="color:#38bdf8;">完整网址</span>或 <span style="color:#38bdf8;">code</span> 粘贴在此：</label>
                 <input class="form-control" id="oauth-code-input" placeholder="直接粘贴地址栏网址 (http://localhost:... 或 4/0A...)">
                 <div style="font-size:12px; color:#94a3b8; margin-top:4px;">💡 提示：网页提示无法连接属正常现象，直接复制浏览器地址栏的整行网址粘贴即可。</div>
                 <div style="margin-top:12px;">
-                    <label>为此账号档案命名</label>
-                    <input class="form-control" id="oauth-prof-name" placeholder="如: 账号1 (自定义名称)">
+                    <label for="oauth-prof-name">为此账号档案命名（留空则使用 Google 邮箱）</label>
+                    <input class="form-control" id="oauth-prof-name" placeholder="如: 账号1 (可留空，默认使用登录邮箱)">
                 </div>
                 <div style="margin-top:12px;">
-                    <label>绑定出站代理节点</label>
-                    <select class="form-control" id="oauth-prof-proxy">
-                        <option value="">🌐 直连（不使用代理）</option>
-                    </select>
+                    <label for="oauth-prof-proxy">绑定出站代理节点</label>
+                    <div class="proxy-select-row">
+                        <select class="form-control" id="oauth-prof-proxy">
+                            <option value="">🌐 直连（不使用代理）</option>
+                        </select>
+                        <button type="button" class="btn btn-secondary proxy-inline-add" id="btn-oauth-add-proxy" onclick="openAddProxyFromSelect('oauth-prof-proxy')">+ 添加代理</button>
+                    </div>
                 </div>
-                <button class="btn btn-primary" style="width:100%; margin-top:16px;" onclick="completeOAuth()">完成并绑定此档案</button>
+                <button type="button" class="btn btn-primary" id="btn-oauth-complete" style="width:100%; margin-top:16px;" onclick="completeOAuth()">完成并绑定此档案</button>
             </div>
             <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
-                <button class="btn btn-secondary" onclick="closeModals()">关闭</button>
+                <button type="button" class="btn btn-secondary" onclick="closeModals()">关闭</button>
             </div>
         </div>
     </div>
@@ -193,10 +208,13 @@
                 <input class="form-control" id="edit-prof-email" placeholder="如: user@gmail.com">
             </div>
             <div class="form-group">
-                <label>绑定出站代理节点</label>
-                <select class="form-control" id="edit-prof-proxy">
-                    <option value="">🌐 直连（不使用代理）</option>
-                </select>
+                <label for="edit-prof-proxy">绑定出站代理节点</label>
+                <div class="proxy-select-row">
+                    <select class="form-control" id="edit-prof-proxy">
+                        <option value="">🌐 直连（不使用代理）</option>
+                    </select>
+                    <button type="button" class="btn btn-secondary proxy-inline-add" id="btn-edit-prof-add-proxy" onclick="openAddProxyFromSelect('edit-prof-proxy')">+ 添加代理</button>
+                </div>
             </div>
             <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;" class="form-group">
                 <div>
